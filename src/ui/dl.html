@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>am-dl · 服务端下载</title>
+<link rel="stylesheet" href="/api/dl/assets/dl.css">
+</head>
+<body>
+<header>
+  <h1>am-<span>dl</span></h1>
+  <div class="meta">
+    <span id="root">—</span>
+    <span id="free">—</span>
+    <a href="/">← 返回播放器</a>
+  </div>
+</header>
+
+<main>
+  <section class="panel">
+    <h2>新建下载</h2>
+    <label class="field">
+      <span>专辑 / 歌单 / 歌曲链接</span>
+      <input id="url" type="text" placeholder="https://music.apple.com/cn/album/… 或 /playlist/… 或 /song/…" autocomplete="off">
+    </label>
+
+    <div class="grid2">
+      <label class="field">
+        <span>音质</span>
+        <select id="quality">
+          <option value="best">最佳可用（ALAC → Atmos → AAC）</option>
+          <option value="alac">无损 ALAC</option>
+          <option value="atmos">杜比全景声</option>
+          <option value="aac">AAC</option>
+          <option value="aac-binaural">AAC 双耳</option>
+          <option value="aac-downmix">AAC 缩混</option>
+          <option value="heaac">HE-AAC</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>ALAC 采样率上限</span>
+        <select id="rate">
+          <option value="0">不限制</option>
+          <option value="44100">≤ 44.1 kHz</option>
+          <option value="48000" selected>≤ 48 kHz</option>
+          <option value="96000">≤ 96 kHz</option>
+        </select>
+      </label>
+    </div>
+
+    <label class="field">
+      <span>保存到</span>
+      <div class="grid2 tight">
+        <select id="rootSel"></select>
+        <input id="destSub" type="text" placeholder="子目录（可留空），如 待整理/2024">
+      </div>
+    </label>
+
+    <div class="grid2">
+      <label class="field">
+        <span>目录模板</span>
+        <input id="albumDir" type="text" value="{album_artist}/{album} ({year})">
+      </label>
+      <label class="field">
+        <span>文件名模板</span>
+        <input id="trackFile" type="text" value="{tracknum:02d} {title}">
+      </label>
+    </div>
+
+    <div class="row">
+      <label class="check"><input id="tags" type="checkbox" checked> 写入标签</label>
+      <label class="check"><input id="cover" type="checkbox" checked> 内嵌封面</label>
+      <label class="check"><input id="skip" type="checkbox" checked> 跳过已存在</label>
+      <label class="check"><input id="syllable" type="checkbox"> 逐字歌词</label>
+    </div>
+    <div class="row">
+      <label class="field inline">
+        <span>歌词</span>
+        <select id="lyrics">
+          <option value="both" selected>内嵌 + .lrc/.ttml</option>
+          <option value="embed">只内嵌</option>
+          <option value="lrc">只存 .lrc</option>
+          <option value="none">不下载</option>
+        </select>
+      </label>
+    </div>
+
+    <div class="actions">
+      <button id="preview" class="ghost">解析链接</button>
+      <button id="start" class="primary" disabled>开始下载</button>
+    </div>
+
+    <div id="previewBox" class="preview hidden"></div>
+    <div id="msg" class="msg"></div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <h2>任务</h2>
+      <button id="refresh" class="ghost small">刷新</button>
+    </div>
+    <div class="bulk">
+      <label class="check"><input id="pickAll" type="checkbox"> 全选</label>
+      <button id="bulkRetry" class="ghost small">重试选中</button>
+      <button id="bulkRemove" class="ghost small">删除选中</button>
+      <button id="bulkClean" class="ghost small">清理已完成</button>
+      <span id="pickInfo" class="dim"></span>
+    </div>
+    <div id="jobs" class="jobs"></div>
+  </section>
+</main>
+
+<template id="jobTpl">
+  <article class="job">
+    <div class="job-head">
+      <label class="pick"><input type="checkbox" class="pickBox"></label>
+      <div class="job-title"><b></b><small></small></div>
+      <div class="job-badge"></div>
+    </div>
+    <div class="bar"><i></i></div>
+    <div class="job-sub"></div>
+    <div class="job-actions">
+      <button class="ghost small act-toggle">详情</button>
+      <button class="ghost small act-retry">重试失败</button>
+      <button class="ghost small act-cancel">取消</button>
+      <button class="ghost small act-remove">移除</button>
+    </div>
+    <ol class="items hidden"></ol>
+  </article>
+</template>
+
+<script type="module" src="/api/dl/assets/dl.mjs"></script>
+</body>
+</html>

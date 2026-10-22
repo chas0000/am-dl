@@ -1,0 +1,18 @@
+# 构建产物
+/target
+/dist
+
+# 本地运行数据
+/.jobs
+/.tmp
+*.log
+
+# 密钥与本地配置
+.token
+.env
+*.local
+
+# 编辑器 / 系统
+.idea/
+.vscode/
+.DS_Store
