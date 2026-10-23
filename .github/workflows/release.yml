@@ -46,7 +46,7 @@ jobs:
               exit 1
             fi
             sed -i -E "0,/^version = \".*\"\$/s//version = \"$ver\"/" Cargo.toml
-            cargo update -p am-dl --offline
+            cargo update -p am-dl
             echo "version=$ver" >> "$GITHUB_OUTPUT"
             echo "构建版本：$ver"
           else
