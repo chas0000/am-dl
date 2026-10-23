@@ -17,6 +17,9 @@ static ADAM_ID_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"_A(\d+)_").un
 pub struct Segment {
     pub offset: u64,
     pub length: u64,
+    /// 该分片生效的 key 在 [`Track::keys`] 里的下标。
+    /// `None` = 用固定 key（Apple 在每个 m3u8 开头放的那段示例密钥）。
+    pub key: Option<u16>,
 }
 
 impl Segment {
@@ -30,12 +33,22 @@ impl Segment {
 #[allow(dead_code)]
 pub struct Track {
     pub adam_id: String,
-    pub key_uri: String,
+    /// 出现过的不重复 key（skd://…），按出现顺序；不含固定 key。
+    /// 有些歌会在中途换密钥，所以不能只留一个。
+    pub keys: Vec<String>,
     pub file_uri: String,
     pub segments: Vec<Segment>,
 }
 
 impl Track {
+    /// 某个分片实际该用哪个 key；`None` 表示固定 key（单测用）
+    #[allow(dead_code)]
+    pub fn key_of(&self, seg: &Segment) -> Option<&str> {
+        seg.key
+            .and_then(|i| self.keys.get(i as usize))
+            .map(String::as_str)
+    }
+
     #[allow(dead_code)]
     pub fn total_size(&self) -> u64 {
         self.segments.last().map_or(0, Segment::end)
@@ -254,7 +267,7 @@ pub fn pick_variant(
 }
 
 /// 解析 `LEN[@OFF]`，缺省 OFF 时接在 `next` 之后
-fn parse_byterange(value: &str, next: u64) -> Result<Segment, String> {
+fn parse_byterange(value: &str, next: u64, key: Option<u16>) -> Result<Segment, String> {
     let value = value.trim().trim_matches('"');
     let (len, off) = match value.split_once('@') {
         Some((l, o)) => (l, Some(o)),
@@ -269,7 +282,11 @@ fn parse_byterange(value: &str, next: u64) -> Result<Segment, String> {
             .map_err(|e| format!("BYTERANGE 偏移非法 '{value}': {e}"))?,
         None => next,
     };
-    Ok(Segment { offset, length })
+    Ok(Segment {
+        offset,
+        length,
+        key,
+    })
 }
 
 /// 解析 media m3u8：取出 adamId / key uri / 文件 URI 与全部分段范围。
@@ -282,7 +299,10 @@ pub fn parse_media_m3u8(source_url: &str, content: &str) -> Result<Track, String
         .map(|c| c[1].to_string())
         .ok_or_else(|| format!("无法从地址中解析出 _A<数字>_: {source_url}"))?;
 
-    let mut key_uri: Option<String> = None;
+    let mut keys: Vec<String> = Vec::new();
+    // 当前生效的 key；None = 固定 key
+    let mut current_key: Option<u16> = None;
+    let mut seen_key = false;
     let mut file_uri: Option<String> = None;
     let mut segments: Vec<Segment> = Vec::new();
 
@@ -293,9 +313,24 @@ pub fn parse_media_m3u8(source_url: &str, content: &str) -> Result<Track, String
             let (_, attrs) = trimmed.split_once(':').unwrap();
             let attrs = attributes(attrs);
             if attrs.get("METHOD") == Some(&"SAMPLE-AES") {
-                if let Some(u) = attrs.get("URI").filter(|u| **u != FIXED_KEY_URI) {
-                    key_uri.get_or_insert_with(|| u.to_string());
+                if let Some(u) = attrs.get("URI") {
+                    seen_key = true;
+                    // 关键：密钥可能在中途更换，必须逐段记录，不能只取第一个
+                    current_key = if *u == FIXED_KEY_URI {
+                        None
+                    } else {
+                        let idx = match keys.iter().position(|k| k == u) {
+                            Some(i) => i,
+                            None => {
+                                keys.push(u.to_string());
+                                keys.len() - 1
+                            }
+                        };
+                        Some(idx as u16)
+                    };
                 }
+            } else if attrs.get("METHOD") == Some(&"NONE") {
+                current_key = None;
             }
             continue;
         }
@@ -307,17 +342,19 @@ pub fn parse_media_m3u8(source_url: &str, content: &str) -> Result<Track, String
             let attrs = attributes(attrs);
             file_uri = attrs.get("URI").map(|s| s.to_string());
             let range = attrs.get("BYTERANGE").ok_or("EXT-X-MAP 没有 BYTERANGE")?;
-            segments.push(parse_byterange(range, 0)?);
+            segments.push(parse_byterange(range, 0, current_key)?);
         } else if let Some(value) = trimmed.strip_prefix("#EXT-X-BYTERANGE:") {
             if segments.is_empty() {
                 return Err("EXT-X-BYTERANGE 出现在 EXT-X-MAP 之前".into());
             }
             let next = segments.last().map_or(0, Segment::end);
-            segments.push(parse_byterange(value, next)?);
+            segments.push(parse_byterange(value, next, current_key)?);
         }
     }
 
-    let key_uri = key_uri.ok_or("m3u8 里没有找到 SAMPLE-AES 的 key URI")?;
+    if !seen_key {
+        return Err("m3u8 里没有找到 SAMPLE-AES 的 key URI".into());
+    }
     let file_uri = file_uri.ok_or("m3u8 里没有找到 EXT-X-MAP URI")?;
     if segments.len() < 2 {
         return Err("m3u8 里没有媒体分片".into());
@@ -336,7 +373,7 @@ pub fn parse_media_m3u8(source_url: &str, content: &str) -> Result<Track, String
 
     Ok(Track {
         adam_id,
-        key_uri,
+        keys,
         file_uri,
         segments,
     })
@@ -368,10 +405,46 @@ mod tests {
 
     #[test]
     fn byterange_continues() {
-        let s = parse_byterange("100@0", 0).unwrap();
+        let s = parse_byterange("100@0", 0, None).unwrap();
         assert_eq!((s.offset, s.length), (0, 100));
-        let s = parse_byterange("50", 100).unwrap();
+        let s = parse_byterange("50", 100, None).unwrap();
         assert_eq!((s.offset, s.length), (100, 50));
+    }
+
+    /// 有些歌会在中途换密钥（如 6825405649：前两段用固定 key，第三段起换成真实 key）。
+    /// 解析必须逐段记录，否则换 key 之后的部分全部解错。
+    #[test]
+    fn key_switches_mid_playlist() {
+        let content = r#"#EXTM3U
+#EXT-X-TARGETDURATION:10
+#EXT-X-KEY:METHOD=SAMPLE-AES,URI="skd://itunes.apple.com/P000000000/s1/e1",KEYFORMAT="com.apple.streamingkeydelivery"
+#EXT-X-MAP:URI="P1_A42_audio_en_gr256_mp4a-40-2_m.mp4",BYTERANGE="700@0"
+#EXT-X-BYTERANGE:1000@700
+#EXT-X-BYTERANGE:1000@1700
+#EXT-X-KEY:METHOD=SAMPLE-AES,URI="skd://itunes.apple.com/p1529669721/c6",KEYFORMAT="com.apple.streamingkeydelivery"
+#EXT-X-BYTERANGE:1000@2700
+#EXT-X-BYTERANGE:1000@3700
+"#;
+        let t = parse_media_m3u8(
+            "https://example.com/a/P1_A42_audio_en_gr256_mp4a-40-2_m.m3u8",
+            content,
+        )
+        .unwrap();
+        assert_eq!(
+            t.keys,
+            vec!["skd://itunes.apple.com/p1529669721/c6".to_string()]
+        );
+        // 0 = init；1、2 用固定 key；3、4 起用真实 key
+        assert_eq!(t.segments[0].key, None);
+        assert_eq!(t.segments[1].key, None);
+        assert_eq!(t.segments[2].key, None);
+        assert_eq!(t.segments[3].key, Some(0));
+        assert_eq!(t.segments[4].key, Some(0));
+        assert_eq!(
+            t.key_of(&t.segments[3]),
+            Some("skd://itunes.apple.com/p1529669721/c6")
+        );
+        assert_eq!(t.key_of(&t.segments[1]), None);
     }
 
     #[test]

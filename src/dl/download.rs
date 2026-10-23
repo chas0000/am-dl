@@ -191,12 +191,13 @@ pub async fn download_track(
     let mut init = fetch_range_retry(state, &file_url, track.segments[0]).await?;
     patch_init_in_place(&mut init);
 
-    // 4. 轨道解密模板
-    let template_json = state
-        .wrapper
-        .fetch_key_json(&spec.adam_id, &track.key_uri)
-        .await?;
-    let template: Arc<Template> = Arc::new(template_from_json(&template_json)?);
+    // 4. 解密模板：一首歌可能有多个 key（中途换密钥），逐个取
+    let mut templates: std::collections::HashMap<u16, Arc<Template>> =
+        std::collections::HashMap::new();
+    for (i, uri) in track.keys.iter().enumerate() {
+        let template_json = state.wrapper.fetch_key_json(&spec.adam_id, uri).await?;
+        templates.insert(i as u16, Arc::new(template_from_json(&template_json)?));
+    }
 
     // 5. 分片：并发拉取 + 解密，按序写入临时 fMP4
     let tmp_mp4 = temp_dir.join(format!("{}.frag.mp4", sanitize_id(&spec.adam_id)));
@@ -217,16 +218,16 @@ pub async fn download_track(
         .map(|idx| {
             let state = state_for_fetch.clone();
             let url = file_url_for_fetch.clone();
-            let template = template.clone();
-            let alac = alac.clone();
             let seg = segments[idx];
+            let template = seg.key.and_then(|k| templates.get(&k)).cloned();
+            let alac = alac.clone();
             async move {
                 let mut data = fetch_range_retry(&state, &url, seg).await?;
                 tokio::task::spawn_blocking(move || {
-                    let tmpl: &Template = if idx == 1 {
-                        fixed_template()
-                    } else {
-                        &template
+                    // 按该分片实际生效的 key 解密；固定 key 段用内置模板
+                    let tmpl: &Template = match &template {
+                        Some(t) => t,
+                        None => fixed_template(),
                     };
                     decrypt_fragment_in_place(&mut data, tmpl)?;
                     if let Some(track) = alac.as_ref() {
