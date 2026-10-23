@@ -1,0 +1,112 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: 构建 ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            bundle: am-dl-linux-x86_64
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            bundle: am-dl-linux-aarch64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存依赖
+        uses: Swatinem/rust-cache@v2
+
+      - name: 构建 release
+        run: cargo build --release --locked
+
+      - name: 打包（二进制 + 部署脚本 + 说明）
+        run: |
+          set -euo pipefail
+          stage="stage/${{ matrix.bundle }}"
+          mkdir -p "$stage/dist" "$stage/scripts" "$stage/deploy"
+          install -m 755 target/release/am-dl "$stage/dist/am-dl"
+          strip "$stage/dist/am-dl" || true
+          install -m 755 scripts/deploy.sh scripts/install-upstream.sh "$stage/scripts/"
+          install -m 644 deploy/am-dl.service.in "$stage/deploy/"
+          install -m 644 README.md LICENSE "$stage/"
+          tar -C stage -czf "${{ matrix.bundle }}.tar.gz" "${{ matrix.bundle }}"
+          ls -lh "${{ matrix.bundle }}.tar.gz"
+
+      - name: 冒烟测试（打出来的二进制能起来）
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/smoke
+          AM_DL_ROOT=/tmp/smoke AM_DL_LISTEN=127.0.0.1:8899 ./stage/${{ matrix.bundle }}/dist/am-dl &
+          pid=$!
+          for _ in $(seq 1 20); do
+            if curl -fsS -m 2 http://127.0.0.1:8899/api/dl/ping | grep -q am-dl; then
+              echo "冒烟通过"; kill $pid; exit 0
+            fi
+            sleep 1
+          done
+          echo "二进制启动失败"; kill $pid 2>/dev/null || true; exit 1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.bundle }}
+          path: ${{ matrix.bundle }}.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: 发布到 Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: 生成校验和
+        run: |
+          cd dist
+          sha256sum *.tar.gz > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: 创建 Release 并上传
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/SHA256SUMS.txt
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          body: |
+            ## 安装
+
+            ```bash
+            tar xzf am-dl-linux-x86_64.tar.gz
+            cd am-dl-linux-x86_64
+
+            # 1) 上游 am-hook（官方预编译，只监听 127.0.0.1:8899）
+            ./scripts/install-upstream.sh
+
+            # 2) 下载器 + 反代（对外 0.0.0.0:8888）
+            ./scripts/deploy.sh --no-build --root /srv/music --upstream http://127.0.0.1:8899
+            ```
+
+            打开 `http://<内网IP>:8888/` 是播放器，`/dl` 是下载中心。需要 wrapper-lite 在 `127.0.0.1:12340`。
