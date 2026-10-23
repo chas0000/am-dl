@@ -27,8 +27,17 @@ use axum::Router;
 
 use crate::config::{AppState, Config};
 
+/// 构建时由 build.rs 写入（`git describe --tags`），见 build.rs
+pub const VERSION: &str = env!("AM_DL_VERSION");
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // 发布出来的二进制至少得能报版本
+    if std::env::args().any(|a| a == "--version" || a == "-V") {
+        println!("am-dl {VERSION}");
+        return Ok(());
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -77,6 +86,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let app = app.with_state(state);
 
+    tracing::info!("am-dl {} 启动", VERSION);
     tracing::info!(
         "am-dl listening on http://{addr}  (wrapper {})",
         std::env::var("AM_DL_WRAPPER").unwrap_or_else(|_| "http://127.0.0.1:12340".into())

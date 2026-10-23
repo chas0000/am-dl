@@ -81,6 +81,16 @@ cd /path/to/am-dl
 
 **没显式传的参数会从已安装的 systemd 单元里继承**，所以重跑脚本不会把下载目录/令牌重置回默认值。
 
+## 发版
+
+版本号不用手工改 `Cargo.toml`：推 `v*` tag 时 CI 会把 tag 写进 `Cargo.toml` 再构建，二进制里的版本来自 `git describe`（`am-dl --version` 可查）。
+
+```bash
+./scripts/release.sh 0.2.0     # 改版本 + fmt/clippy/test + 提交 + 打 tag + 推送
+```
+
+推 tag 后 GitHub Actions 构建 `linux-x86_64` / `linux-aarch64` 两个包并发布到 Release，附 `SHA256SUMS.txt`。
+
 ## 更新
 
 ```bash

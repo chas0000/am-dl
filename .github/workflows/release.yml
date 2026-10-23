@@ -34,8 +34,40 @@ jobs:
       - name: 缓存依赖
         uses: Swatinem/rust-cache@v2
 
+      # Cargo.toml 的版本自动跟随 tag，不用手工改
+      - name: 版本跟随 tag
+        id: ver
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            ver="${GITHUB_REF_NAME#v}"
+            if ! [[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
+              echo "tag 不是 semver：$GITHUB_REF_NAME" >&2
+              exit 1
+            fi
+            sed -i -E "0,/^version = \".*\"\$/s//version = \"$ver\"/" Cargo.toml
+            cargo update -p am-dl --offline
+            echo "version=$ver" >> "$GITHUB_OUTPUT"
+            echo "构建版本：$ver"
+          else
+            echo "非 tag 构建，沿用 Cargo.toml 的版本"
+            echo "version=" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: 构建 release
+        env:
+          AM_DL_VERSION_OVERRIDE: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
         run: cargo build --release --locked
+
+      - name: 校验二进制版本
+        run: |
+          set -euo pipefail
+          got="$(./target/release/am-dl --version)"
+          echo "二进制版本：$got"
+          if [[ -n "${{ steps.ver.outputs.version }}" ]]; then
+            echo "$got" | grep -q "${{ github.ref_name }}" || {
+              echo "二进制版本与 tag 不一致：$got vs ${{ github.ref_name }}" >&2; exit 1; }
+          fi
 
       - name: 打包（二进制 + 部署脚本 + 说明）
         run: |

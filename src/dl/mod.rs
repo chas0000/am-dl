@@ -194,7 +194,10 @@ pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/dl", get(page))
         .route("/dl/", get(page))
-        .route("/api/dl/ping", get(|| async { "am-dl " }))
+        .route(
+            "/api/dl/ping",
+            get(|| async { format!("am-dl {}", crate::VERSION) }),
+        )
         .route("/api/dl/config", get(config_handler))
         .route("/api/dl/preview", post(preview_handler))
         .route("/api/dl/jobs", get(list_handler).post(create_handler))
