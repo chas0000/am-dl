@@ -26,14 +26,14 @@ use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
-use futures::StreamExt;
 use axum::{Json, Router};
+use futures::StreamExt;
 use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::Semaphore;
 
-use crate::dl::model::{Handle, Item, Job, JobOptions, Quality, Status, TrackSpec};
 use crate::config::AppState;
+use crate::dl::model::{Handle, Item, Job, JobOptions, Quality, Status, TrackSpec};
 
 static DL: OnceLock<Arc<DlState>> = OnceLock::new();
 
@@ -55,7 +55,11 @@ impl DlState {
         let raw = std::env::var("AM_DL_ROOTS")
             .ok()
             .filter(|v| !v.trim().is_empty())
-            .or_else(|| std::env::var("AM_DL_ROOT").ok().filter(|v| !v.trim().is_empty()))
+            .or_else(|| {
+                std::env::var("AM_DL_ROOT")
+                    .ok()
+                    .filter(|v| !v.trim().is_empty())
+            })
             .unwrap_or_else(|| "/root/music".into());
         let mut roots: Vec<PathBuf> = raw
             .split(':')
@@ -71,7 +75,9 @@ impl DlState {
         let jobs_dir = root.join(".jobs");
         let _ = std::fs::create_dir_all(&temp);
         let _ = std::fs::create_dir_all(&jobs_dir);
-        let token = std::env::var("AM_DL_TOKEN").ok().filter(|v| !v.trim().is_empty());
+        let token = std::env::var("AM_DL_TOKEN")
+            .ok()
+            .filter(|v| !v.trim().is_empty());
         let concurrency = std::env::var("AM_DL_CONCURRENCY")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
@@ -101,12 +107,20 @@ impl DlState {
         if dest.starts_with('/') {
             let path = PathBuf::from(dest);
             let normalized = normalize(&path);
-            if self.roots.iter().any(|r| normalized.starts_with(normalize(r))) {
+            if self
+                .roots
+                .iter()
+                .any(|r| normalized.starts_with(normalize(r)))
+            {
                 return Ok(normalized);
             }
             return Err(format!(
                 "保存目录 {dest} 不在允许的根目录内（{}）",
-                self.roots.iter().map(|r| r.display().to_string()).collect::<Vec<_>>().join(", ")
+                self.roots
+                    .iter()
+                    .map(|r| r.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ));
         }
         let rel = normalize(&self.root.join(dest));
@@ -134,14 +148,20 @@ impl DlState {
 
     /// 启动时载入历史任务；上次运行中被中断的标为失败，可一键重试
     fn load_history(&self) {
-        let Ok(entries) = std::fs::read_dir(&self.jobs_dir) else { return };
+        let Ok(entries) = std::fs::read_dir(&self.jobs_dir) else {
+            return;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) != Some("json") {
                 continue;
             }
-            let Ok(text) = std::fs::read_to_string(&path) else { continue };
-            let Ok(mut job) = serde_json::from_str::<Job>(&text) else { continue };
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(mut job) = serde_json::from_str::<Job>(&text) else {
+                continue;
+            };
             for item in job.items.iter_mut() {
                 if matches!(item.status, Status::Running | Status::Queued) {
                     item.status = Status::Failed;
@@ -183,9 +203,18 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/api/dl/jobs/:id/retry", post(retry_handler))
         .route("/api/dl/jobs/:id/remove", post(remove_handler))
         .route("/api/dl/jobs/batch", post(batch_handler))
-        .route("/api/dl/assets/dl.mjs", get(|| async { asset(JS, "text/javascript; charset=utf-8") }))
-        .route("/api/dl/assets/dl.css", get(|| async { asset(CSS, "text/css; charset=utf-8") }))
-        .route("/api/dl/assets/inject.mjs", get(|| async { asset(INJECT_JS, "text/javascript; charset=utf-8") }))
+        .route(
+            "/api/dl/assets/dl.mjs",
+            get(|| async { asset(JS, "text/javascript; charset=utf-8") }),
+        )
+        .route(
+            "/api/dl/assets/dl.css",
+            get(|| async { asset(CSS, "text/css; charset=utf-8") }),
+        )
+        .route(
+            "/api/dl/assets/inject.mjs",
+            get(|| async { asset(INJECT_JS, "text/javascript; charset=utf-8") }),
+        )
 }
 
 static HTML: &str = include_str!("../ui/dl.html");
@@ -194,7 +223,11 @@ static CSS: &str = include_str!("../ui/dl.css");
 static INJECT_JS: &str = include_str!("../ui/inject.mjs");
 
 fn asset(body: &'static str, mime: &'static str) -> Response {
-    Response::builder().header("content-type", mime).header("cache-control", "no-cache").body(Body::from(body)).unwrap()
+    Response::builder()
+        .header("content-type", mime)
+        .header("cache-control", "no-cache")
+        .body(Body::from(body))
+        .unwrap()
 }
 
 async fn page() -> Html<&'static str> {
@@ -210,7 +243,9 @@ struct TokenQuery {
 }
 
 fn authorized(state: &DlState, headers: &HeaderMap, query: &TokenQuery) -> bool {
-    let Some(expected) = &state.token else { return true };
+    let Some(expected) = &state.token else {
+        return true;
+    };
     if let Some(t) = &query.token {
         if t == expected {
             return true;
@@ -218,7 +253,10 @@ fn authorized(state: &DlState, headers: &HeaderMap, query: &TokenQuery) -> bool 
     }
     if let Some(h) = headers.get("authorization").and_then(|h| h.to_str().ok()) {
         let h = h.trim();
-        let token = h.strip_prefix("Bearer ").or_else(|| h.strip_prefix("bearer ")).unwrap_or(h);
+        let token = h
+            .strip_prefix("Bearer ")
+            .or_else(|| h.strip_prefix("bearer "))
+            .unwrap_or(h);
         if token.trim() == expected {
             return true;
         }
@@ -227,7 +265,11 @@ fn authorized(state: &DlState, headers: &HeaderMap, query: &TokenQuery) -> bool 
 }
 
 fn unauthorized() -> Response {
-    (StatusCode::UNAUTHORIZED, Json(json!({"code": 1, "msg": "需要访问令牌（?token= 或 Authorization: Bearer）"}))).into_response()
+    (
+        StatusCode::UNAUTHORIZED,
+        Json(json!({"code": 1, "msg": "需要访问令牌（?token= 或 Authorization: Bearer）"})),
+    )
+        .into_response()
 }
 
 fn err(status: StatusCode, msg: impl Into<String>) -> Response {
@@ -236,7 +278,11 @@ fn err(status: StatusCode, msg: impl Into<String>) -> Response {
 
 /* ---------- 接口 ---------- */
 
-async fn config_handler(State(_state): State<Arc<AppState>>, headers: HeaderMap, Query(q): Query<TokenQuery>) -> Response {
+async fn config_handler(
+    State(_state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(q): Query<TokenQuery>,
+) -> Response {
     let dl = dl();
     if !authorized(dl, &headers, &q) {
         return unauthorized();
@@ -380,7 +426,12 @@ async fn create_handler(
     if let Some(v) = body.lyrics {
         options.lyrics = match v.as_str() {
             "none" | "embed" | "lrc" | "both" => v,
-            other => return err(StatusCode::BAD_REQUEST, format!("lyrics 只能是 none/embed/lrc/both，收到 {other}")),
+            other => {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    format!("lyrics 只能是 none/embed/lrc/both，收到 {other}"),
+                )
+            }
         };
     }
     if let Some(v) = body.syllable {
@@ -491,7 +542,8 @@ async fn run_job(state: Arc<AppState>, handle: Arc<Handle>) {
                         handle.with(|job| {
                             job.items[idx].status = Status::Skipped;
                             job.items[idx].path = Some(path.display().to_string());
-                            job.items[idx].bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+                            job.items[idx].bytes =
+                                std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
                         });
                         persist(&handle);
                         return;
@@ -511,7 +563,8 @@ async fn run_job(state: Arc<AppState>, handle: Arc<Handle>) {
             let result = if spec.is_mv {
                 mv::download_mv(&state, &spec, &options, &out_path, &dl.temp, cancel_flag).await
             } else {
-                download::download_track(&state, &spec, &options, &out_path, &dl.temp, cancel_flag).await
+                download::download_track(&state, &spec, &options, &out_path, &dl.temp, cancel_flag)
+                    .await
             };
 
             handle.with(|job| {
@@ -526,7 +579,11 @@ async fn run_job(state: Arc<AppState>, handle: Arc<Handle>) {
                         item.error = None;
                     }
                     Err(e) => {
-                        item.status = if handle.canceled() { Status::Canceled } else { Status::Failed };
+                        item.status = if handle.canceled() {
+                            Status::Canceled
+                        } else {
+                            Status::Failed
+                        };
                         item.error = Some(e);
                     }
                 }
@@ -554,11 +611,21 @@ fn needs_quality(options: &JobOptions) -> bool {
     options.album_dir.contains("{quality}") || options.track_file.contains("{quality}")
 }
 
-fn target_path(handle: &Arc<Handle>, idx: usize, options: &JobOptions, quality: &str) -> Option<PathBuf> {
+fn target_path(
+    handle: &Arc<Handle>,
+    idx: usize,
+    options: &JobOptions,
+    quality: &str,
+) -> Option<PathBuf> {
     let job = handle.job.lock().unwrap();
     let item = job.items.get(idx)?;
     let dir = tags::render_template(&options.album_dir, &item.spec, &item.spec.playlist, quality);
-    let name = tags::render_template(&options.track_file, &item.spec, &item.spec.playlist, quality);
+    let name = tags::render_template(
+        &options.track_file,
+        &item.spec,
+        &item.spec.playlist,
+        quality,
+    );
     let mut path = match dl().resolve_base(&options.dest) {
         Ok(p) => p,
         Err(_) => dl().root.clone(),
@@ -566,16 +633,29 @@ fn target_path(handle: &Arc<Handle>, idx: usize, options: &JobOptions, quality: 
     if !dir.is_empty() && dir != "_" {
         path = path.join(dir);
     }
-    path.push(format!("{name}.{}", if item.spec.is_mv { "mp4" } else { "m4a" }));
+    path.push(format!(
+        "{name}.{}",
+        if item.spec.is_mv { "mp4" } else { "m4a" }
+    ));
     Some(path)
 }
 
-async fn list_handler(State(_s): State<Arc<AppState>>, headers: HeaderMap, Query(q): Query<TokenQuery>) -> Response {
+async fn list_handler(
+    State(_s): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(q): Query<TokenQuery>,
+) -> Response {
     let dl = dl();
     if !authorized(dl, &headers, &q) {
         return unauthorized();
     }
-    let mut jobs: Vec<Job> = dl.handles.read().unwrap().values().map(|h| h.snapshot()).collect();
+    let mut jobs: Vec<Job> = dl
+        .handles
+        .read()
+        .unwrap()
+        .values()
+        .map(|h| h.snapshot())
+        .collect();
     jobs.sort_by_key(|j| std::cmp::Reverse(j.created_at));
     let list: Vec<_> = jobs
         .iter()
@@ -778,7 +858,12 @@ async fn batch_handler(
                 let _ = std::fs::remove_file(dl.jobs_dir.join(format!("{id}.json")));
                 affected += 1;
             }
-            other => return err(StatusCode::BAD_REQUEST, format!("未知动作 {other}（retry / cancel / remove）")),
+            other => {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    format!("未知动作 {other}（retry / cancel / remove）"),
+                )
+            }
         }
     }
 
@@ -811,7 +896,9 @@ fn free_bytes(path: &Path) -> u64 {
         fn statvfs(path: *const std::os::raw::c_char, buf: *mut StatVfs) -> i32;
     }
 
-    let Ok(c) = CString::new(path.as_os_str().as_bytes()) else { return 0 };
+    let Ok(c) = CString::new(path.as_os_str().as_bytes()) else {
+        return 0;
+    };
     let mut buf = std::mem::MaybeUninit::<StatVfs>::zeroed();
     let rc = unsafe { statvfs(c.as_ptr(), buf.as_mut_ptr()) };
     if rc != 0 {

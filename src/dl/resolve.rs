@@ -6,8 +6,8 @@ use std::sync::LazyLock;
 use regex::Regex;
 use serde_json::Value;
 
-use crate::dl::model::TrackSpec;
 use crate::config::AppState;
+use crate::dl::model::TrackSpec;
 
 static STOREFRONT_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"music\.apple\.com/([a-z]{2})/").unwrap());
@@ -44,7 +44,10 @@ fn artwork(url: &str) -> String {
     if url.is_empty() {
         return String::new();
     }
-    url.replace("{w}", "1200").replace("{h}", "1200").replace("{c}", "bb").replace("{f}", "jpg")
+    url.replace("{w}", "1200")
+        .replace("{h}", "1200")
+        .replace("{c}", "bb")
+        .replace("{f}", "jpg")
 }
 
 /// 把 `relationships.tracks.data[]` 里的一条转成 TrackSpec
@@ -117,10 +120,20 @@ fn album_ctx(v: &Value) -> AlbumCtx {
     let disc_total = v
         .pointer("/relationships/tracks/data")
         .and_then(Value::as_array)
-        .map(|tracks| tracks.iter().map(|t| u32_at(t, "/attributes/discNumber")).max().unwrap_or(0))
+        .map(|tracks| {
+            tracks
+                .iter()
+                .map(|t| u32_at(t, "/attributes/discNumber"))
+                .max()
+                .unwrap_or(0)
+        })
         .unwrap_or(0);
     AlbumCtx {
-        id: v.get("id").and_then(Value::as_str).unwrap_or("").to_string(),
+        id: v
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
         name: str_at(&a, "/name").to_string(),
         artist: str_at(&a, "/artistName").to_string(),
         copyright: str_at(&a, "/copyright").to_string(),
@@ -134,10 +147,17 @@ fn album_ctx(v: &Value) -> AlbumCtx {
 }
 
 /// 拉取分页：`next` 是形如 `/v1/catalog/us/playlists/pl.x/tracks?offset=100` 的相对地址
-async fn collect_tracks(state: &Arc<AppState>, first: &Value, ctx: &AlbumCtx) -> Result<Vec<TrackSpec>, String> {
+async fn collect_tracks(
+    state: &Arc<AppState>,
+    first: &Value,
+    ctx: &AlbumCtx,
+) -> Result<Vec<TrackSpec>, String> {
     let mut out = Vec::new();
     let push_all = |v: &Value, out: &mut Vec<TrackSpec>| {
-        if let Some(list) = v.pointer("/relationships/tracks/data").and_then(Value::as_array) {
+        if let Some(list) = v
+            .pointer("/relationships/tracks/data")
+            .and_then(Value::as_array)
+        {
             for t in list {
                 if let Some(spec) = track_from(t, ctx) {
                     out.push(spec);
@@ -177,7 +197,10 @@ pub async fn resolve(state: &Arc<AppState>, url: &str) -> Result<Resolved, Strin
     if let Ok(id) = crate::links::parse_album_link(url) {
         let value = state
             .amp
-            .catalog_json(&format!("catalog/{storefront}/albums/{id}"), "include=tracks&limit[tracks]=300")
+            .catalog_json(
+                &format!("catalog/{storefront}/albums/{id}"),
+                "include=tracks&limit[tracks]=300",
+            )
             .await?;
         let item = value
             .pointer("/data/0")
@@ -200,7 +223,10 @@ pub async fn resolve(state: &Arc<AppState>, url: &str) -> Result<Resolved, Strin
     if let Ok(id) = crate::links::parse_playlist_link(url) {
         let value = state
             .amp
-            .catalog_json(&format!("catalog/{storefront}/playlists/{id}"), "include=tracks&limit[tracks]=300")
+            .catalog_json(
+                &format!("catalog/{storefront}/playlists/{id}"),
+                "include=tracks&limit[tracks]=300",
+            )
             .await?;
         let item = value
             .pointer("/data/0")
@@ -247,21 +273,35 @@ pub async fn resolve(state: &Arc<AppState>, url: &str) -> Result<Resolved, Strin
     if let Ok(id) = crate::links::parse_mv_link(url) {
         let value = state
             .amp
-            .catalog_json(&format!("catalog/{storefront}/music-videos/{id}"), "include=albums,artists")
+            .catalog_json(
+                &format!("catalog/{storefront}/music-videos/{id}"),
+                "include=albums,artists",
+            )
             .await?;
         let item = value
             .pointer("/data/0")
             .ok_or_else(|| "amp-api 没有返回 MV 数据".to_string())?;
         let a = item.get("attributes").cloned().unwrap_or(Value::Null);
-        let album = item.pointer("/relationships/albums/data/0").cloned().unwrap_or(Value::Null);
+        let album = item
+            .pointer("/relationships/albums/data/0")
+            .cloned()
+            .unwrap_or(Value::Null);
         let ctx = album_ctx(&album);
         let spec = TrackSpec {
             adam_id: id.clone(),
             song_id: id.clone(),
             title: str_at(&a, "/name").to_string(),
             artist: str_at(&a, "/artistName").to_string(),
-            album: if ctx.name.is_empty() { str_at(&a, "/albumName").to_string() } else { ctx.name.clone() },
-            album_artist: if ctx.artist.is_empty() { str_at(&a, "/artistName").to_string() } else { ctx.artist.clone() },
+            album: if ctx.name.is_empty() {
+                str_at(&a, "/albumName").to_string()
+            } else {
+                ctx.name.clone()
+            },
+            album_artist: if ctx.artist.is_empty() {
+                str_at(&a, "/artistName").to_string()
+            } else {
+                ctx.artist.clone()
+            },
             genre: a
                 .get("genreNames")
                 .and_then(Value::as_array)
@@ -272,7 +312,11 @@ pub async fn resolve(state: &Arc<AppState>, url: &str) -> Result<Resolved, Strin
             release_date: str_at(&a, "/releaseDate").to_string(),
             cover_url: {
                 let art = artwork(str_at(&a, "/artwork/url"));
-                if art.is_empty() { ctx.cover.clone() } else { art }
+                if art.is_empty() {
+                    ctx.cover.clone()
+                } else {
+                    art
+                }
             },
             album_id: ctx.id.clone(),
             is_mv: true,
@@ -296,12 +340,18 @@ pub async fn resolve(state: &Arc<AppState>, url: &str) -> Result<Resolved, Strin
     if let Ok(id) = crate::links::parse_song_link(url) {
         let value = state
             .amp
-            .catalog_json(&format!("catalog/{storefront}/songs/{id}"), "include=albums,artists")
+            .catalog_json(
+                &format!("catalog/{storefront}/songs/{id}"),
+                "include=albums,artists",
+            )
             .await?;
         let item = value
             .pointer("/data/0")
             .ok_or_else(|| "amp-api 没有返回歌曲数据".to_string())?;
-        let album = item.pointer("/relationships/albums/data/0").cloned().unwrap_or(Value::Null);
+        let album = item
+            .pointer("/relationships/albums/data/0")
+            .cloned()
+            .unwrap_or(Value::Null);
         let ctx = album_ctx(&album);
         let mut spec = track_from(item, &ctx).ok_or_else(|| "无法解析歌曲信息".to_string())?;
         if spec.album.is_empty() {
@@ -322,10 +372,13 @@ pub async fn resolve(state: &Arc<AppState>, url: &str) -> Result<Resolved, Strin
     Err("只支持 Apple Music 的专辑 / 歌单 / 歌曲链接".into())
 }
 
-
 /// 歌手页：把这个歌手名下的全部专辑（含单曲 / EP）展开成一张曲目表。
 /// 一张专辑一次请求，最多 100 张，避免误点一个大牌歌手时把服务器打爆。
-async fn resolve_artist(state: &Arc<AppState>, storefront: &str, artist_id: &str) -> Result<Resolved, String> {
+async fn resolve_artist(
+    state: &Arc<AppState>,
+    storefront: &str,
+    artist_id: &str,
+) -> Result<Resolved, String> {
     const MAX_ALBUMS: usize = 100;
 
     let artist = state
@@ -345,7 +398,10 @@ async fn resolve_artist(state: &Arc<AppState>, storefront: &str, artist_id: &str
     let mut album_ids: Vec<String> = Vec::new();
     let first = state
         .amp
-        .catalog_json(&format!("catalog/{storefront}/artists/{artist_id}/albums"), "limit=100")
+        .catalog_json(
+            &format!("catalog/{storefront}/artists/{artist_id}/albums"),
+            "limit=100",
+        )
         .await?;
     let push_albums = |v: &Value, out: &mut Vec<String>| {
         if let Some(list) = v.pointer("/data").and_then(Value::as_array) {
@@ -357,7 +413,10 @@ async fn resolve_artist(state: &Arc<AppState>, storefront: &str, artist_id: &str
         }
     };
     push_albums(&first, &mut album_ids);
-    let mut next = first.pointer("/next").and_then(Value::as_str).map(str::to_string);
+    let mut next = first
+        .pointer("/next")
+        .and_then(Value::as_str)
+        .map(str::to_string);
     let mut pages = 0;
     while let Some(path) = next.take() {
         if pages >= 5 || album_ids.len() >= MAX_ALBUMS {
@@ -368,7 +427,10 @@ async fn resolve_artist(state: &Arc<AppState>, storefront: &str, artist_id: &str
         let p = p.trim_start_matches("/v1/");
         let value = state.amp.catalog_json(p, q).await?;
         push_albums(&value, &mut album_ids);
-        next = value.pointer("/next").and_then(Value::as_str).map(str::to_string);
+        next = value
+            .pointer("/next")
+            .and_then(Value::as_str)
+            .map(str::to_string);
     }
     album_ids.truncate(MAX_ALBUMS);
     if album_ids.is_empty() {
@@ -386,7 +448,10 @@ async fn resolve_artist(state: &Arc<AppState>, storefront: &str, artist_id: &str
             let id = album_id.clone();
             futs.push(async move {
                 st.amp
-                    .catalog_json(&format!("catalog/{sf}/albums/{id}"), "include=tracks&limit[tracks]=300")
+                    .catalog_json(
+                        &format!("catalog/{sf}/albums/{id}"),
+                        "include=tracks&limit[tracks]=300",
+                    )
                     .await
             });
         }

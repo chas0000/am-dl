@@ -26,9 +26,19 @@ const MAX_RESP: usize = 64 * 1024 * 1024;
 fn skip_header(name: &str) -> bool {
     matches!(
         name,
-        "host" | "connection" | "keep-alive" | "proxy-authenticate" | "proxy-authorization"
-            | "te" | "trailer" | "transfer-encoding" | "upgrade" | "accept-encoding"
-            | "content-length" | "etag" | "content-encoding"
+        "host"
+            | "connection"
+            | "keep-alive"
+            | "proxy-authenticate"
+            | "proxy-authorization"
+            | "te"
+            | "trailer"
+            | "transfer-encoding"
+            | "upgrade"
+            | "accept-encoding"
+            | "content-length"
+            | "etag"
+            | "content-encoding"
     )
 }
 
@@ -84,7 +94,9 @@ pub async fn handler(State(st): State<Arc<AppState>>, req: Request) -> Response 
     let bytes = match resp.bytes().await {
         Ok(b) if b.len() <= MAX_RESP => b,
         Ok(_) => return (StatusCode::BAD_GATEWAY, "上游响应过大").into_response(),
-        Err(e) => return (StatusCode::BAD_GATEWAY, format!("读取上游响应失败: {e}")).into_response(),
+        Err(e) => {
+            return (StatusCode::BAD_GATEWAY, format!("读取上游响应失败: {e}")).into_response()
+        }
     };
 
     // 304 之类没有响应体，原样返回（ETag 已经去掉，这里主要是保险）
@@ -96,7 +108,9 @@ pub async fn handler(State(st): State<Arc<AppState>>, req: Request) -> Response 
             }
             out = out.header(k.as_str(), v.as_bytes());
         }
-        return out.body(Body::empty()).unwrap_or_else(|_| StatusCode::BAD_GATEWAY.into_response());
+        return out
+            .body(Body::empty())
+            .unwrap_or_else(|_| StatusCode::BAD_GATEWAY.into_response());
     }
 
     let (payload, inject) = if is_html && status.is_success() {
@@ -118,7 +132,10 @@ pub async fn handler(State(st): State<Arc<AppState>>, req: Request) -> Response 
         out = out.header(k.as_str(), v.as_bytes());
     }
     if is_html {
-        out = out.header(CONTENT_TYPE, HeaderValue::from_static("text/html; charset=utf-8"));
+        out = out.header(
+            CONTENT_TYPE,
+            HeaderValue::from_static("text/html; charset=utf-8"),
+        );
     }
     if inject {
         // 内容变了，ETag 不能再给，否则浏览器会拿着旧的 304 不刷新

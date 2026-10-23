@@ -33,13 +33,17 @@ impl Amp {
             client,
             token: Mutex::new(None),
             script_re: Regex::new(r#"src="(/assets/index[~-][0-9A-Za-z_-]+\.js)""#).unwrap(),
-            jwt_re: Regex::new(r"eyJ[0-9A-Za-z_-]{10,}\.eyJ[0-9A-Za-z_-]{10,}\.[0-9A-Za-z_-]{10,}").unwrap(),
+            jwt_re: Regex::new(r"eyJ[0-9A-Za-z_-]{10,}\.eyJ[0-9A-Za-z_-]{10,}\.[0-9A-Za-z_-]{10,}")
+                .unwrap(),
         }
     }
 
     fn cached(&self) -> Option<String> {
         let guard = self.token.lock().unwrap();
-        guard.as_ref().filter(|(_, exp)| Instant::now() < *exp).map(|(t, _)| t.clone())
+        guard
+            .as_ref()
+            .filter(|(_, exp)| Instant::now() < *exp)
+            .map(|(t, _)| t.clone())
     }
 
     async fn token(&self) -> Result<String, String> {
@@ -121,12 +125,17 @@ impl Amp {
             if !resp.status().is_success() {
                 return Err(format!("amp-api 返回 HTTP {}", resp.status()));
             }
-            return resp.json().await.map_err(|e| format!("解析 amp-api JSON 失败: {e}"));
+            return resp
+                .json()
+                .await
+                .map_err(|e| format!("解析 amp-api JSON 失败: {e}"));
         }
         if !status.is_success() {
             return Err(format!("amp-api 返回 HTTP {status}"));
         }
-        resp.json().await.map_err(|e| format!("解析 amp-api JSON 失败: {e}"))
+        resp.json()
+            .await
+            .map_err(|e| format!("解析 amp-api JSON 失败: {e}"))
     }
 }
 

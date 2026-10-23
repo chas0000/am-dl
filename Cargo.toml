@@ -5,7 +5,7 @@ edition = "2021"
 description = "Apple Music 服务端下载器 + 上游 am-hook 反向代理（专辑/歌单/单曲/MV/歌手）"
 license = "AGPL-3.0-only"
 readme = "README.md"
-rust-version = "1.75"
+rust-version = "1.80"
 keywords = ["apple-music", "alac", "downloader", "hls", "fairplay"]
 categories = ["command-line-utilities"]
 
@@ -26,8 +26,9 @@ bytes = "1"
 futures = "0.3"
 
 # 解密与封装复用上游的纯 Rust crate（不拉 am-hook 本体）
-am-mp4 = { git = "https://github.com/itouakirai/am-hook", tag = "v0.5.7" }
-am-media = { git = "https://github.com/itouakirai/am-hook", tag = "v0.5.7" }
+# 跟随上游 main（确切版本锁在 Cargo.lock 里；要升级就 cargo update -p am-mp4 -p am-media）
+am-mp4 = { git = "https://github.com/itouakirai/am-hook", branch = "main" }
+am-media = { git = "https://github.com/itouakirai/am-hook", branch = "main" }
 
 [profile.release]
 opt-level = 3

@@ -9,12 +9,15 @@ use futures::StreamExt;
 
 use am_media::defrag::{defragment, Options as DefragOptions};
 use am_media::readahead::{Sink, Source};
-use am_mp4::{alac_track, decrypt_fragment_in_place, fixed_template, patch_init_in_place, repair_alac_fragment, template_from_json, Template};
+use am_mp4::{
+    alac_track, decrypt_fragment_in_place, fixed_template, patch_init_in_place,
+    repair_alac_fragment, template_from_json, Template,
+};
 
+use crate::config::AppState;
 use crate::dl::m3u8::{self, Segment};
 use crate::dl::model::{JobOptions, TrackSpec};
 use crate::dl::tags::{self, Cover};
-use crate::config::AppState;
 
 /// 每个分片的下载+解密重试次数
 const SEGMENT_RETRIES: u32 = 3;
@@ -41,7 +44,9 @@ async fn fetch_text(state: &AppState, url: &str) -> Result<String, String> {
     if !resp.status().is_success() {
         return Err(format!("请求 {url} 返回 HTTP {}", resp.status()));
     }
-    resp.text().await.map_err(|e| format!("读取 {url} 失败: {e}"))
+    resp.text()
+        .await
+        .map_err(|e| format!("读取 {url} 失败: {e}"))
 }
 
 async fn fetch_range(state: &AppState, url: &str, seg: Segment) -> Result<Vec<u8>, String> {
@@ -56,7 +61,10 @@ async fn fetch_range(state: &AppState, url: &str, seg: Segment) -> Result<Vec<u8
     if !resp.status().is_success() {
         return Err(format!("拉取分片 {range} 返回 HTTP {}", resp.status()));
     }
-    let body = resp.bytes().await.map_err(|e| format!("读取分片 {range} 失败: {e}"))?;
+    let body = resp
+        .bytes()
+        .await
+        .map_err(|e| format!("读取分片 {range} 失败: {e}"))?;
     // 上游忽略 Range 时自行截取
     if body.len() as u64 > seg.length {
         let start = seg.offset as usize;
@@ -103,7 +111,9 @@ struct FileSink {
 impl Sink for FileSink {
     fn write(&mut self, buf: &[u8]) -> am_media::Result<()> {
         use std::io::Write;
-        self.file.write_all(buf).map_err(|e| am_media::Error::msg(format!("写入失败: {e}")))
+        self.file
+            .write_all(buf)
+            .map_err(|e| am_media::Error::msg(format!("写入失败: {e}")))
     }
 }
 
@@ -117,9 +127,14 @@ async fn master_url(state: &AppState, adam_id: &str) -> Result<String, String> {
     if !reply.status.is_success() {
         return Err(format!("wrapper-lite /m3u8 返回 HTTP {}", reply.status));
     }
-    let v: serde_json::Value = reply.json().map_err(|e| format!("解析 /m3u8 响应失败: {e}"))?;
+    let v: serde_json::Value = reply
+        .json()
+        .map_err(|e| format!("解析 /m3u8 响应失败: {e}"))?;
     if v.get("code").and_then(serde_json::Value::as_i64) != Some(0) {
-        let msg = v.get("msg").and_then(serde_json::Value::as_str).unwrap_or("未知错误");
+        let msg = v
+            .get("msg")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("未知错误");
         return Err(format!("wrapper-lite 返回错误: {msg}"));
     }
     v.pointer("/data/m3u8")
@@ -188,7 +203,8 @@ pub async fn download_track(
     let mut file = std::fs::File::create(&tmp_mp4).map_err(|e| format!("创建临时文件失败: {e}"))?;
     {
         use std::io::Write;
-        file.write_all(&init).map_err(|e| format!("写入 init 失败: {e}"))?;
+        file.write_all(&init)
+            .map_err(|e| format!("写入 init 失败: {e}"))?;
     }
 
     let segments = track.segments.clone();
@@ -207,7 +223,11 @@ pub async fn download_track(
             async move {
                 let mut data = fetch_range_retry(&state, &url, seg).await?;
                 tokio::task::spawn_blocking(move || {
-                    let tmpl: &Template = if idx == 1 { fixed_template() } else { &template };
+                    let tmpl: &Template = if idx == 1 {
+                        fixed_template()
+                    } else {
+                        &template
+                    };
                     decrypt_fragment_in_place(&mut data, tmpl)?;
                     if let Some(track) = alac.as_ref() {
                         repair_alac_fragment(&mut data, track)?;
@@ -228,7 +248,8 @@ pub async fn download_track(
         }
         let data = item?;
         use std::io::Write;
-        file.write_all(&data).map_err(|e| format!("写入分片失败: {e}"))?;
+        file.write_all(&data)
+            .map_err(|e| format!("写入分片失败: {e}"))?;
     }
     drop(file);
 
@@ -236,7 +257,9 @@ pub async fn download_track(
     let want_lyrics = opts.lyrics != "none";
     let lyrics = if want_lyrics {
         match state.wrapper.fetch_lyrics(&spec.adam_id, None).await {
-            Ok(crate::wrapper::Lyrics::Found(ttml)) => Some((crate::dl::lyrics::ttml_to_lrc(&ttml, opts.syllable), ttml)),
+            Ok(crate::wrapper::Lyrics::Found(ttml)) => {
+                Some((crate::dl::lyrics::ttml_to_lrc(&ttml, opts.syllable), ttml))
+            }
             Ok(crate::wrapper::Lyrics::NotFound) => None,
             Err(e) => {
                 tracing::debug!(adam_id = %spec.adam_id, error = %e, "歌词获取失败，跳过");
@@ -254,7 +277,9 @@ pub async fn download_track(
         } else {
             None
         };
-        let cover = cover_bytes.as_ref().map(|(bytes, png)| Cover { bytes, png: *png });
+        let cover = cover_bytes
+            .as_ref()
+            .map(|(bytes, png)| Cover { bytes, png: *png });
         let embedded = lyrics
             .as_ref()
             .filter(|_| opts.lyrics == "embed" || opts.lyrics == "both")
@@ -269,7 +294,8 @@ pub async fn download_track(
         size: std::fs::metadata(&tmp_mp4).map(|m| m.len()).unwrap_or(0),
     };
     let final_tmp = temp_dir.join(format!("{}.final.m4a", sanitize_id(&spec.adam_id)));
-    let out_file = std::fs::File::create(&final_tmp).map_err(|e| format!("创建输出文件失败: {e}"))?;
+    let out_file =
+        std::fs::File::create(&final_tmp).map_err(|e| format!("创建输出文件失败: {e}"))?;
     let mut sink = FileSink { file: out_file };
     let mut options = DefragOptions::song();
     if !tags_blob.is_empty() {
@@ -279,7 +305,8 @@ pub async fn download_track(
     drop(sink);
 
     if let Some(parent) = out_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("创建目录 {} 失败: {e}", parent.display()))?;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("创建目录 {} 失败: {e}", parent.display()))?;
     }
     std::fs::rename(&final_tmp, out_path).map_err(|e| format!("移动到目标路径失败: {e}"))?;
     let _ = std::fs::remove_file(&tmp_mp4);
@@ -296,11 +323,20 @@ pub async fn download_track(
         }
     }
 
-    Ok(Downloaded { path: out_path.to_path_buf(), bytes, quality })
+    Ok(Downloaded {
+        path: out_path.to_path_buf(),
+        bytes,
+        quality,
+    })
 }
 
 async fn fetch_cover(state: &AppState, url: &str) -> Option<(Vec<u8>, bool)> {
-    let resp = client(state).get(url).timeout(Duration::from_secs(20)).send().await.ok()?;
+    let resp = client(state)
+        .get(url)
+        .timeout(Duration::from_secs(20))
+        .send()
+        .await
+        .ok()?;
     if !resp.status().is_success() {
         return None;
     }
@@ -310,6 +346,7 @@ async fn fetch_cover(state: &AppState, url: &str) -> Option<(Vec<u8>, bool)> {
 }
 
 fn sanitize_id(id: &str) -> String {
-    id.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect()
+    id.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect()
 }
-

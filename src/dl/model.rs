@@ -21,7 +21,10 @@ pub enum Status {
 
 impl Status {
     pub fn is_final(self) -> bool {
-        matches!(self, Status::Done | Status::Failed | Status::Skipped | Status::Canceled)
+        matches!(
+            self,
+            Status::Done | Status::Failed | Status::Skipped | Status::Canceled
+        )
     }
 }
 
@@ -171,7 +174,15 @@ pub struct Item {
 
 impl Item {
     pub fn new(spec: TrackSpec) -> Self {
-        Self { spec, status: Status::Queued, error: None, path: None, bytes: 0, quality: None, attempts: 0 }
+        Self {
+            spec,
+            status: Status::Queued,
+            error: None,
+            path: None,
+            bytes: 0,
+            quality: None,
+            attempts: 0,
+        }
     }
 }
 
@@ -198,7 +209,11 @@ impl Job {
             .iter()
             .filter(|i| matches!(i.status, Status::Done | Status::Skipped))
             .count();
-        let failed = self.items.iter().filter(|i| i.status == Status::Failed).count();
+        let failed = self
+            .items
+            .iter()
+            .filter(|i| i.status == Status::Failed)
+            .count();
         (self.items.len(), done, failed)
     }
 
@@ -222,7 +237,10 @@ impl Job {
             return;
         }
         let failed = self.items.iter().any(|i| i.status == Status::Failed);
-        let done = self.items.iter().any(|i| matches!(i.status, Status::Done | Status::Skipped));
+        let done = self
+            .items
+            .iter()
+            .any(|i| matches!(i.status, Status::Done | Status::Skipped));
         self.status = match (failed, done) {
             (true, _) => Status::Failed,
             (false, true) => Status::Done,
@@ -239,7 +257,10 @@ pub struct Handle {
 
 impl Handle {
     pub fn new(job: Job) -> Arc<Handle> {
-        Arc::new(Handle { job: Mutex::new(job), cancel: AtomicBool::new(false) })
+        Arc::new(Handle {
+            job: Mutex::new(job),
+            cancel: AtomicBool::new(false),
+        })
     }
 
     pub fn snapshot(&self) -> Job {
@@ -273,5 +294,8 @@ pub fn new_job_id() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
-    format!("{ms:x}-{:02x}", SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed) & 0xff)
+    format!(
+        "{ms:x}-{:02x}",
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed) & 0xff
+    )
 }

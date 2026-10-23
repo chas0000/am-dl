@@ -4,17 +4,24 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-static SONG_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^https://music\.apple\.com/[a-z]{2}/song/[^/?#]+/([0-9]+)(?:[/?#]|$)").unwrap());
-static MV_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^https://music\.apple\.com/[a-z]{2}/music-video/[^/?#]+/([0-9]+)(?:[/?#]|$)").unwrap());
-static ALBUM_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^https://music\.apple\.com/[a-z]{2}/album/(?:[^/?#]+/)?([0-9]+)(?:[/?#]|$)").unwrap());
+static SONG_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^https://music\.apple\.com/[a-z]{2}/song/[^/?#]+/([0-9]+)(?:[/?#]|$)").unwrap()
+});
+static MV_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^https://music\.apple\.com/[a-z]{2}/music-video/[^/?#]+/([0-9]+)(?:[/?#]|$)")
+        .unwrap()
+});
+static ALBUM_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^https://music\.apple\.com/[a-z]{2}/album/(?:[^/?#]+/)?([0-9]+)(?:[/?#]|$)")
+        .unwrap()
+});
 static PLAYLIST_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^https://music\.apple\.com/[a-z]{2}/playlist/(?:[^/?#]+/)?(pl\.[0-9A-Za-z_-]+)(?:[/?#]|$)").unwrap()
 });
-static ARTIST_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^https://music\.apple\.com/[a-z]{2}/artist/(?:[^/?#]+/)?([0-9]+)(?:[/?#]|$)").unwrap());
+static ARTIST_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^https://music\.apple\.com/[a-z]{2}/artist/(?:[^/?#]+/)?([0-9]+)(?:[/?#]|$)")
+        .unwrap()
+});
 
 fn capture(re: &Regex, url: &str, what: &str) -> Result<String, String> {
     re.captures(url.trim())

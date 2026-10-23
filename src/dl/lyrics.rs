@@ -8,7 +8,8 @@ use std::sync::LazyLock;
 use regex::Regex;
 
 static P_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)<p\b([^>]*)>(.*?)</p>").unwrap());
-static SPAN_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)<span\b([^>]*)>(.*?)</span>").unwrap());
+static SPAN_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?s)<span\b([^>]*)>(.*?)</span>").unwrap());
 static TAG_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)<[^>]+>").unwrap());
 static ATTR_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"([a-zA-Z:_-]+)\s*=\s*"([^"]*)""#).unwrap());
@@ -109,10 +110,15 @@ fn parse_lines(ttml: &str) -> Vec<Line> {
             if text.trim().is_empty() {
                 continue;
             }
-            let role = attr(sattrs, "ttm:role").or_else(|| attr(sattrs, "role")).unwrap_or("");
+            let role = attr(sattrs, "ttm:role")
+                .or_else(|| attr(sattrs, "role"))
+                .unwrap_or("");
             let sb = attr(sattrs, "begin").and_then(parse_time).or(begin);
             let se = attr(sattrs, "end").and_then(parse_time).or(end);
-            if role.contains("translation") || role.contains("romanization") || role.contains("pronunciation") {
+            if role.contains("translation")
+                || role.contains("romanization")
+                || role.contains("pronunciation")
+            {
                 extra.push(text.trim().to_string());
             } else {
                 main.push_str(&text);
@@ -127,14 +133,27 @@ fn parse_lines(ttml: &str) -> Vec<Line> {
             }
         }
 
-        let text = if words.is_empty() { plain(inner) } else { main.trim().to_string() };
+        let text = if words.is_empty() {
+            plain(inner)
+        } else {
+            main.trim().to_string()
+        };
         if text.is_empty() && extra.is_empty() {
             continue;
         }
         let b = begin.or_else(|| words.first().map(|w| w.0)).unwrap_or(0.0);
-        out.push(Line { begin: b, text, words, extra });
+        out.push(Line {
+            begin: b,
+            text,
+            words,
+            extra,
+        });
     }
-    out.sort_by(|a, b| a.begin.partial_cmp(&b.begin).unwrap_or(std::cmp::Ordering::Equal));
+    out.sort_by(|a, b| {
+        a.begin
+            .partial_cmp(&b.begin)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     out
 }
 
@@ -147,11 +166,19 @@ pub fn ttml_to_lrc(ttml: &str, syllable: bool) -> String {
     }
     let timed = lines.iter().any(|l| l.begin > 0.0);
     if !timed {
-        return lines.into_iter().map(|l| l.text).collect::<Vec<_>>().join("\n");
+        return lines
+            .into_iter()
+            .map(|l| l.text)
+            .collect::<Vec<_>>()
+            .join("\n");
     }
     let mut out = String::new();
     for line in &lines {
-        let words: Vec<_> = line.words.iter().filter(|w| w.2.trim().len() > 0).collect();
+        let words: Vec<_> = line
+            .words
+            .iter()
+            .filter(|w| !w.2.trim().is_empty())
+            .collect();
         let body = if syllable && words.len() > 1 {
             let mut s = String::new();
             for (b, _, t) in &words {
@@ -201,7 +228,10 @@ mod tests {
     #[test]
     fn syllable_lrc() {
         let lrc = ttml_to_lrc(SAMPLE, true);
-        assert!(lrc.contains("[00:12.34]<00:12.34>Hello <00:13.00>world<00:15.50>"), "{lrc}");
+        assert!(
+            lrc.contains("[00:12.34]<00:12.34>Hello <00:13.00>world<00:15.50>"),
+            "{lrc}"
+        );
     }
 
     #[test]
@@ -210,7 +240,10 @@ mod tests {
         let lrc = ttml_to_lrc(ttml, false);
         assert!(lrc.contains("[01:03.34]You know"), "{lrc}");
         let syl = ttml_to_lrc(ttml, true);
-        assert!(syl.contains("[01:03.34]<01:03.34>You <01:04.00>know<01:05.00>"), "{syl}");
+        assert!(
+            syl.contains("[01:03.34]<01:03.34>You <01:04.00>know<01:05.00>"),
+            "{syl}"
+        );
     }
 
     #[test]

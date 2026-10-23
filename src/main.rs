@@ -31,7 +31,8 @@ use crate::config::{AppState, Config};
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "am_dl=info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "am_dl=info".into()),
         )
         .init();
 
@@ -40,7 +41,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .ok()
             .filter(|v| !v.trim().is_empty())
             .unwrap_or_else(|| "http://127.0.0.1:12340".into()),
-        wrapper_auth: std::env::var("AM_DL_WRAPPER_AUTH").ok().filter(|v| !v.trim().is_empty()),
+        wrapper_auth: std::env::var("AM_DL_WRAPPER_AUTH")
+            .ok()
+            .filter(|v| !v.trim().is_empty()),
         wrapper_concurrency: std::env::var("AM_DL_WRAPPER_CONCURRENCY")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -51,7 +54,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .filter(|v| !v.is_empty()),
     };
     let listen = std::env::var("AM_DL_LISTEN").unwrap_or_else(|_| "0.0.0.0:8888".into());
-    let addr: std::net::SocketAddr = listen.parse().map_err(|e| format!("AM_DL_LISTEN 非法: {e}"))?;
+    let addr: std::net::SocketAddr = listen
+        .parse()
+        .map_err(|e| format!("AM_DL_LISTEN 非法: {e}"))?;
 
     let state = Arc::new(AppState::new(config));
     dl::init(&state);
@@ -63,11 +68,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             tracing::info!("代理模式：其余请求转发到 {up}");
             app = app.fallback(proxy::handler);
         }
-        None => app = app.route("/", get(|| async { axum::response::Redirect::temporary("/dl") })),
+        None => {
+            app = app.route(
+                "/",
+                get(|| async { axum::response::Redirect::temporary("/dl") }),
+            )
+        }
     }
     let app = app.with_state(state);
 
-    tracing::info!("am-dl listening on http://{addr}  (wrapper {})", std::env::var("AM_DL_WRAPPER").unwrap_or_else(|_| "http://127.0.0.1:12340".into()));
+    tracing::info!(
+        "am-dl listening on http://{addr}  (wrapper {})",
+        std::env::var("AM_DL_WRAPPER").unwrap_or_else(|_| "http://127.0.0.1:12340".into())
+    );
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
     Ok(())

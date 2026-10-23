@@ -82,7 +82,12 @@ pub fn build_mv_ilst(spec: &TrackSpec, cover: Option<Cover<'_>>) -> Vec<u8> {
     build(spec, None, cover, 6)
 }
 
-fn build(spec: &TrackSpec, lyrics: Option<&str>, cover: Option<Cover<'_>>, media_type: i64) -> Vec<u8> {
+fn build(
+    spec: &TrackSpec,
+    lyrics: Option<&str>,
+    cover: Option<Cover<'_>>,
+    media_type: i64,
+) -> Vec<u8> {
     let mut out: Vec<u8> = Vec::new();
     let mut push = |b: Vec<u8>| out.extend_from_slice(&b);
 
@@ -154,7 +159,11 @@ fn build(spec: &TrackSpec, lyrics: Option<&str>, cover: Option<Cover<'_>>, media
         push(text("\u{a9}lyr", lyrics));
     }
     if let Some(cover) = cover.filter(|c| !c.bytes.is_empty()) {
-        push(item("covr", if cover.png { TYPE_PNG } else { TYPE_JPEG }, cover.bytes));
+        push(item(
+            "covr",
+            if cover.png { TYPE_PNG } else { TYPE_JPEG },
+            cover.bytes,
+        ));
     }
     out
 }
@@ -282,8 +291,14 @@ mod tests {
     #[test]
     fn template_pads() {
         let s = spec();
-        assert_eq!(render_template("{tracknum:02d} {title}", &s, "", "ALAC"), "03 Song");
-        assert_eq!(render_template("{album_artist}/{album} ({year})", &s, "", "ALAC"), "AA/Album (2021)");
+        assert_eq!(
+            render_template("{tracknum:02d} {title}", &s, "", "ALAC"),
+            "03 Song"
+        );
+        assert_eq!(
+            render_template("{album_artist}/{album} ({year})", &s, "", "ALAC"),
+            "AA/Album (2021)"
+        );
     }
 
     #[test]

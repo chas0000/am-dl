@@ -14,11 +14,11 @@ use am_media::mv::{mux_init, Stream};
 use am_media::playready::{parse_pssh, Cdm, Device, Entropy};
 use am_media::readahead::{Sink, Source};
 
+use crate::config::AppState;
+use crate::dl::download::Downloaded;
 use crate::dl::m3u8::{absolute, attributes};
 use crate::dl::model::{JobOptions, TrackSpec};
 use crate::dl::tags::{self, Cover};
-use crate::dl::download::Downloaded;
-use crate::config::AppState;
 
 /* ---------- HLS 解析 ---------- */
 
@@ -87,7 +87,10 @@ pub fn parse_master(text: &str) -> Result<(Vec<Variant>, HashMap<String, AudioGr
             }
         } else if let Some(rest) = line.strip_prefix("#EXT-X-STREAM-INF:") {
             pending = Some(rest.to_string());
-        } else if !line.is_empty() && !line.starts_with('#') && (line.contains(".m3u8") || line.starts_with("http")) {
+        } else if !line.is_empty()
+            && !line.starts_with('#')
+            && (line.contains(".m3u8") || line.starts_with("http"))
+        {
             let raw_attrs = pending.take().unwrap_or_default();
             let attrs = attributes(&raw_attrs);
             let (w, h) = attrs
@@ -149,10 +152,20 @@ pub fn parse_media(text: &str, base_url: &str) -> Result<Playlist, String> {
         } else if let Some(rest) = line.strip_prefix("#EXT-X-MAP:") {
             let a = attributes(rest);
             let uri = a.get("URI").copied().ok_or("EXT-X-MAP 没有 URI")?;
-            let range = a.get("BYTERANGE").map(|r| parse_range(r, &uri, None)).transpose()?.flatten();
-            init = Some(Resource { url: resolve_url(base_url, uri), range });
+            let range = a
+                .get("BYTERANGE")
+                .map(|r| parse_range(r, uri, None))
+                .transpose()?
+                .flatten();
+            init = Some(Resource {
+                url: resolve_url(base_url, uri),
+                range,
+            });
         } else if let Some(rest) = line.strip_prefix("#EXTINF:") {
-            duration = rest.split(',').next().and_then(|d| d.trim().parse::<f64>().ok());
+            duration = rest
+                .split(',')
+                .next()
+                .and_then(|d| d.trim().parse::<f64>().ok());
         } else if let Some(rest) = line.strip_prefix("#EXT-X-BYTERANGE:") {
             range = Some(rest.to_string());
         } else if line == "#EXT-X-DISCONTINUITY" {
@@ -172,7 +185,12 @@ pub fn parse_media(text: &str, base_url: &str) -> Result<Playlist, String> {
             if init.is_none() {
                 return Err("分片出现在 EXT-X-MAP 之前".into());
             }
-            segments.push(Segment { res: Resource { url, range: r }, key: key.clone(), start: time, duration: d });
+            segments.push(Segment {
+                res: Resource { url, range: r },
+                key: key.clone(),
+                start: time,
+                duration: d,
+            });
             time += d;
         }
     }
@@ -186,7 +204,11 @@ pub fn parse_media(text: &str, base_url: &str) -> Result<Playlist, String> {
         return Err("播放列表标了加密，但没有找到 PlayReady 的 key".into());
     }
     let init = init.ok_or("播放列表缺少 EXT-X-MAP")?;
-    Ok(Playlist { init, segments, duration: time })
+    Ok(Playlist {
+        init,
+        segments,
+        duration: time,
+    })
 }
 
 /// 相对地址 → 绝对地址，并继承 base 的查询串。
@@ -203,7 +225,11 @@ fn resolve_url(base: &str, uri: &str) -> String {
 }
 
 /// `LEN[@OFF]`；省略 OFF 时接在同一地址上一段的末尾
-fn parse_range(spec: &str, url: &str, previous: Option<&(String, u64)>) -> Result<Option<(u64, u64)>, String> {
+fn parse_range(
+    spec: &str,
+    url: &str,
+    previous: Option<&(String, u64)>,
+) -> Result<Option<(u64, u64)>, String> {
     let spec = spec.trim().trim_matches('"');
     let (len, off) = match spec.split_once('@') {
         Some((l, o)) => (l, Some(o)),
@@ -211,7 +237,9 @@ fn parse_range(spec: &str, url: &str, previous: Option<&(String, u64)>) -> Resul
     };
     let length: u64 = len.parse().map_err(|_| format!("非法 BYTERANGE: {spec}"))?;
     let offset = match off {
-        Some(o) => o.parse().map_err(|_| format!("非法 BYTERANGE 偏移: {spec}"))?,
+        Some(o) => o
+            .parse()
+            .map_err(|_| format!("非法 BYTERANGE 偏移: {spec}"))?,
         None => previous
             .filter(|(u, _)| u == url)
             .map(|(_, end)| *end)
@@ -227,23 +255,40 @@ async fn fetch_text(state: &AppState, url: &str, ua_am: bool) -> Result<String, 
     if ua_am {
         req = req.header(reqwest::header::USER_AGENT, "AM");
     }
-    let resp = req.send().await.map_err(|e| format!("请求 {url} 失败: {e}"))?;
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format!("请求 {url} 失败: {e}"))?;
     if !resp.status().is_success() {
         return Err(format!("请求 {url} 返回 HTTP {}", resp.status()));
     }
-    resp.text().await.map_err(|e| format!("读取 {url} 失败: {e}"))
+    resp.text()
+        .await
+        .map_err(|e| format!("读取 {url} 失败: {e}"))
 }
 
 async fn fetch_resource(state: &AppState, res: &Resource) -> Result<Vec<u8>, String> {
-    let mut req = state.http_client.get(&res.url).timeout(Duration::from_secs(120));
+    let mut req = state
+        .http_client
+        .get(&res.url)
+        .timeout(Duration::from_secs(120));
     if let Some((off, len)) = res.range {
-        req = req.header(reqwest::header::RANGE, format!("bytes={}-{}", off, off + len - 1));
+        req = req.header(
+            reqwest::header::RANGE,
+            format!("bytes={}-{}", off, off + len - 1),
+        );
     }
-    let resp = req.send().await.map_err(|e| format!("拉取 {} 失败: {e}", res.url))?;
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format!("拉取 {} 失败: {e}", res.url))?;
     if !resp.status().is_success() {
         return Err(format!("拉取 {} 返回 HTTP {}", res.url, resp.status()));
     }
-    let body = resp.bytes().await.map_err(|e| format!("读取 {} 失败: {e}", res.url))?;
+    let body = resp
+        .bytes()
+        .await
+        .map_err(|e| format!("读取 {} 失败: {e}", res.url))?;
     if let Some((off, len)) = res.range {
         if body.len() as u64 > len {
             let start = off as usize;
@@ -255,7 +300,11 @@ async fn fetch_resource(state: &AppState, res: &Resource) -> Result<Vec<u8>, Str
 }
 
 /// PlayReady：把 data: URI 里的 PSSH 变成 license 请求，拿回 16 字节内容密钥
-async fn playready_key(state: &Arc<AppState>, adam_id: &str, uri: &str) -> Result<[u8; 16], String> {
+async fn playready_key(
+    state: &Arc<AppState>,
+    adam_id: &str,
+    uri: &str,
+) -> Result<[u8; 16], String> {
     let mut fill = |buf: &mut [u8]| {
         use std::io::Read;
         if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
@@ -271,7 +320,8 @@ async fn playready_key(state: &Arc<AppState>, adam_id: &str, uri: &str) -> Resul
         Ok(h) => h,
         Err(_) => {
             // 回退：直接当 KID 用
-            let decoded = am_media::crypto::base64_decode(payload).ok_or("PlayReady URI 无法解析")?;
+            let decoded =
+                am_media::crypto::base64_decode(payload).ok_or("PlayReady URI 无法解析")?;
             if decoded.len() != 16 {
                 cdm.close(&session);
                 return Err("PlayReady URI 既不是 PSSH 也不是 KID".into());
@@ -310,10 +360,15 @@ async fn playready_key(state: &Arc<AppState>, adam_id: &str, uri: &str) -> Resul
         cdm.close(&session);
         return Err(format!("wrapper-lite /license 返回 HTTP {}", reply.status));
     }
-    let v: serde_json::Value = reply.json().map_err(|e| format!("解析 /license 响应失败: {e}"))?;
+    let v: serde_json::Value = reply
+        .json()
+        .map_err(|e| format!("解析 /license 响应失败: {e}"))?;
     if v.get("code").and_then(serde_json::Value::as_i64) != Some(0) {
         cdm.close(&session);
-        let msg = v.get("msg").and_then(serde_json::Value::as_str).unwrap_or("未知错误");
+        let msg = v
+            .get("msg")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("未知错误");
         return Err(format!("wrapper-lite 返回错误: {msg}"));
     }
     let license = v
@@ -321,7 +376,9 @@ async fn playready_key(state: &Arc<AppState>, adam_id: &str, uri: &str) -> Resul
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| "wrapper-lite 没有返回 license".to_string())?;
     let xml = am_media::crypto::base64_decode(license.trim()).ok_or("license 不是合法 base64")?;
-    let keys = cdm.parse_license(&session, &xml).map_err(|e| e.to_string())?;
+    let keys = cdm
+        .parse_license(&session, &xml)
+        .map_err(|e| e.to_string())?;
     cdm.close(&session);
     if keys.len() != 1 {
         return Err(format!("期望 1 个内容密钥，实际 {}", keys.len()));
@@ -349,7 +406,13 @@ async fn prepare(
     let playlist = parse_media(&text, url)?;
 
     let mut keys = HashMap::new();
-    let uris: Vec<String> = playlist.segments.iter().filter_map(|s| s.key.clone()).collect::<std::collections::HashSet<_>>().into_iter().collect();
+    let uris: Vec<String> = playlist
+        .segments
+        .iter()
+        .filter_map(|s| s.key.clone())
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
     for uri in uris {
         let key = match cache.get(&uri) {
             Some(k) => *k,
@@ -365,7 +428,12 @@ async fn prepare(
     let init_raw = fetch_resource(state, &playlist.init).await?;
     let (stream, init) = Stream::open(&init_raw, base).map_err(|e| e.to_string())?;
     let _ = name;
-    Ok(Prepared { stream, init, playlist, keys })
+    Ok(Prepared {
+        stream,
+        init,
+        playlist,
+        keys,
+    })
 }
 
 fn moof_count(data: &[u8]) -> u32 {
@@ -406,7 +474,9 @@ struct FileSink {
 impl Sink for FileSink {
     fn write(&mut self, buf: &[u8]) -> am_media::Result<()> {
         use std::io::Write;
-        self.file.write_all(buf).map_err(|e| am_media::Error::msg(format!("写入失败: {e}")))
+        self.file
+            .write_all(buf)
+            .map_err(|e| am_media::Error::msg(format!("写入失败: {e}")))
     }
 }
 
@@ -422,15 +492,28 @@ pub async fn download_mv(
     // 1. master（必须带 UA: AM，否则拿不到高码率）
     let reply = state
         .wrapper
-        .send(state.wrapper.get("/webplayback").query(&[("adamId", spec.adam_id.as_str())]))
+        .send(
+            state
+                .wrapper
+                .get("/webplayback")
+                .query(&[("adamId", spec.adam_id.as_str())]),
+        )
         .await
         .map_err(|e| format!("请求 wrapper-lite /webplayback 失败: {e}"))?;
     if !reply.status.is_success() {
-        return Err(format!("wrapper-lite /webplayback 返回 HTTP {}", reply.status));
+        return Err(format!(
+            "wrapper-lite /webplayback 返回 HTTP {}",
+            reply.status
+        ));
     }
-    let v: serde_json::Value = reply.json().map_err(|e| format!("解析 /webplayback 响应失败: {e}"))?;
+    let v: serde_json::Value = reply
+        .json()
+        .map_err(|e| format!("解析 /webplayback 响应失败: {e}"))?;
     if v.get("code").and_then(serde_json::Value::as_i64) != Some(0) {
-        let msg = v.get("msg").and_then(serde_json::Value::as_str).unwrap_or("未知错误");
+        let msg = v
+            .get("msg")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("未知错误");
         return Err(format!("wrapper-lite 返回错误: {msg}"));
     }
     let master_url = v
@@ -442,14 +525,20 @@ pub async fn download_mv(
     let (variants, groups) = parse_master(&master_text)?;
 
     // 2. 选视频（不超过限制的最高分辨率）与音频
-    let max_h = opts.max_height as u32;
-    let mut videos: Vec<&Variant> = variants.iter().filter(|v| max_h == 0 || v.height <= max_h).collect();
+    let max_h = opts.max_height;
+    let mut videos: Vec<&Variant> = variants
+        .iter()
+        .filter(|v| max_h == 0 || v.height <= max_h)
+        .collect();
     if videos.is_empty() {
         videos = variants.iter().collect();
     }
     videos.sort_by(|a, b| b.height.cmp(&a.height).then(b.bandwidth.cmp(&a.bandwidth)));
     let video = (*videos.first().ok_or("没有可用的视频变体")?).clone();
-    let audio = groups.get(&video.audio_group).filter(|g| !g.uri.is_empty()).cloned();
+    let audio = groups
+        .get(&video.audio_group)
+        .filter(|g| !g.uri.is_empty())
+        .cloned();
 
     let mut cache = HashMap::new();
     let video_url = resolve_url(master_url, &video.uri);
@@ -462,22 +551,31 @@ pub async fn download_mv(
         None => None,
     };
 
-    let duration = v_stream
-        .playlist
-        .duration
-        .max(a_stream.as_ref().map(|s| s.playlist.duration).unwrap_or(0.0));
+    let duration = v_stream.playlist.duration.max(
+        a_stream
+            .as_ref()
+            .map(|s| s.playlist.duration)
+            .unwrap_or(0.0),
+    );
 
     // 3. 合并 init，写入临时文件
     let tmp = temp_dir.join(format!("{}.mv.fmp4", sanitize(&spec.adam_id)));
-    let mut file = std::fs::File::create(&tmp)
-        .map_err(|e| format!("创建临时文件 {} 失败: {e}（下载根目录不可写？）", tmp.display()))?;
+    let mut file = std::fs::File::create(&tmp).map_err(|e| {
+        format!(
+            "创建临时文件 {} 失败: {e}（下载根目录不可写？）",
+            tmp.display()
+        )
+    })?;
     {
         use std::io::Write;
         let init = match &a_stream {
-            Some(a) => mux_init(&v_stream.stream, &a.stream, duration).map_err(|e| e.to_string())?,
+            Some(a) => {
+                mux_init(&v_stream.stream, &a.stream, duration).map_err(|e| e.to_string())?
+            }
             None => v_stream.init.clone(),
         };
-        file.write_all(&init).map_err(|e| format!("写入 init 失败: {e}"))?;
+        file.write_all(&init)
+            .map_err(|e| format!("写入 init 失败: {e}"))?;
     }
 
     // 4. 先写完整条视频轨，再写音频轨（与上游 / 参考实现的顺序一致）
@@ -498,14 +596,23 @@ pub async fn download_mv(
                 return Err("已取消".into());
             }
             let raw = fetch_resource(state, &seg.res).await?;
-            let key = seg.key.as_ref().and_then(|u| prepared.keys.get(u)).copied().unwrap_or([0u8; 16]);
+            let key = seg
+                .key
+                .as_ref()
+                .and_then(|u| prepared.keys.get(u))
+                .copied()
+                .unwrap_or([0u8; 16]);
             let mut data = raw;
-            let out = prepared.stream.fragment(&mut data, &key, mux, sequence).map_err(|e| e.to_string())?;
+            let out = prepared
+                .stream
+                .fragment(&mut data, &key, mux, sequence)
+                .map_err(|e| e.to_string())?;
             if mux {
                 sequence += moof_count(&out);
             }
             use std::io::Write;
-            file.write_all(&out).map_err(|e| format!("写入分片失败: {e}"))?;
+            file.write_all(&out)
+                .map_err(|e| format!("写入分片失败: {e}"))?;
         }
     }
     drop(file);
@@ -517,7 +624,10 @@ pub async fn download_mv(
         } else {
             None
         };
-        let cover = cover_bytes.as_ref().map(|(b, png)| Cover { bytes: b, png: *png });
+        let cover = cover_bytes.as_ref().map(|(b, png)| Cover {
+            bytes: b,
+            png: *png,
+        });
         tags::build_mv_ilst(spec, cover)
     } else {
         Vec::new()
@@ -529,7 +639,8 @@ pub async fn download_mv(
         size: std::fs::metadata(&tmp).map(|m| m.len()).unwrap_or(0),
     };
     let final_tmp = temp_dir.join(format!("{}.mv.mp4", sanitize(&spec.adam_id)));
-    let out_file = std::fs::File::create(&final_tmp).map_err(|e| format!("创建输出文件失败: {e}"))?;
+    let out_file =
+        std::fs::File::create(&final_tmp).map_err(|e| format!("创建输出文件失败: {e}"))?;
     let mut sink = FileSink { file: out_file };
     let mut options = DefragOptions::mv();
     if !tags_blob.is_empty() {
@@ -546,14 +657,29 @@ pub async fn download_mv(
     let bytes = std::fs::metadata(out_path).map(|m| m.len()).unwrap_or(0);
 
     let quality = match &audio {
-        Some(a) => format!("{}p {} · {}", video.height, video.codecs, if a.name.is_empty() { "audio" } else { &a.name }),
+        Some(a) => format!(
+            "{}p {} · {}",
+            video.height,
+            video.codecs,
+            if a.name.is_empty() { "audio" } else { &a.name }
+        ),
         None => format!("{}p {}", video.height, video.codecs),
     };
-    Ok(Downloaded { path: out_path.to_path_buf(), bytes, quality })
+    Ok(Downloaded {
+        path: out_path.to_path_buf(),
+        bytes,
+        quality,
+    })
 }
 
 async fn fetch_cover(state: &AppState, url: &str) -> Option<(Vec<u8>, bool)> {
-    let resp = state.http_client.get(url).timeout(Duration::from_secs(20)).send().await.ok()?;
+    let resp = state
+        .http_client
+        .get(url)
+        .timeout(Duration::from_secs(20))
+        .send()
+        .await
+        .ok()?;
     if !resp.status().is_success() {
         return None;
     }
@@ -563,7 +689,9 @@ async fn fetch_cover(state: &AppState, url: &str) -> Option<(Vec<u8>, bool)> {
 }
 
 fn sanitize(id: &str) -> String {
-    id.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect()
+    id.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect()
 }
 
 #[cfg(test)]

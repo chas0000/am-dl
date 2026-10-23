@@ -9,7 +9,8 @@ use am_mp4::FIXED_KEY_URI;
 
 use crate::dl::model::Quality;
 
-static ATTR_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"([A-Z0-9-]+)=("[^"]*"|[^,\r\n]+)"#).unwrap());
+static ATTR_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"([A-Z0-9-]+)=("[^"]*"|[^,\r\n]+)"#).unwrap());
 static ADAM_ID_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"_A(\d+)_").unwrap());
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,7 +135,12 @@ pub fn attributes(input: &str) -> HashMap<&str, &str> {
         .captures_iter(input)
         .map(|caps| {
             let (k, v) = (caps.get(1).unwrap().as_str(), caps.get(2).unwrap().as_str());
-            (k, v.strip_prefix('"').and_then(|v| v.strip_suffix('"')).unwrap_or(v))
+            (
+                k,
+                v.strip_prefix('"')
+                    .and_then(|v| v.strip_suffix('"'))
+                    .unwrap_or(v),
+            )
         })
         .collect()
 }
@@ -199,7 +205,11 @@ pub fn parse_master_variants(content: &str) -> Result<Vec<Variant>, String> {
 
 /// 按偏好挑一个变体：`quality` 精确匹配，`Best` 按 ALAC → Atmos → AAC → HE-AAC 顺序；
 /// `max_sample_rate` 限制 ALAC 采样率（0 表示不限），超限时退到不超过它的最高档。
-pub fn pick_variant(variants: &[Variant], quality: Quality, max_sample_rate: u32) -> Result<Variant, String> {
+pub fn pick_variant(
+    variants: &[Variant],
+    quality: Quality,
+    max_sample_rate: u32,
+) -> Result<Variant, String> {
     let mut candidates: Vec<&Variant> = match quality {
         Quality::Best => variants.iter().collect(),
         other => variants.iter().filter(|v| v.quality() == other).collect(),
@@ -250,9 +260,13 @@ fn parse_byterange(value: &str, next: u64) -> Result<Segment, String> {
         Some((l, o)) => (l, Some(o)),
         None => (value, None),
     };
-    let length = len.parse().map_err(|e| format!("BYTERANGE 长度非法 '{value}': {e}"))?;
+    let length = len
+        .parse()
+        .map_err(|e| format!("BYTERANGE 长度非法 '{value}': {e}"))?;
     let offset = match off {
-        Some(o) => o.parse().map_err(|e| format!("BYTERANGE 偏移非法 '{value}': {e}"))?,
+        Some(o) => o
+            .parse()
+            .map_err(|e| format!("BYTERANGE 偏移非法 '{value}': {e}"))?,
         None => next,
     };
     Ok(Segment { offset, length })
@@ -312,12 +326,20 @@ pub fn parse_media_m3u8(source_url: &str, content: &str) -> Result<Track, String
     let mut expected = 0;
     for s in &segments {
         if s.offset != expected || s.length == 0 {
-            return Err(format!("分片在偏移 {} 处不连续（期望 {expected}）", s.offset));
+            return Err(format!(
+                "分片在偏移 {} 处不连续（期望 {expected}）",
+                s.offset
+            ));
         }
         expected = s.end();
     }
 
-    Ok(Track { adam_id, key_uri, file_uri, segments })
+    Ok(Track {
+        adam_id,
+        key_uri,
+        file_uri,
+        segments,
+    })
 }
 
 /// 相对地址转绝对地址
@@ -354,7 +376,13 @@ mod tests {
 
     #[test]
     fn absolute_join() {
-        assert_eq!(absolute("https://a/b/c.m3u8", "d.m3u8"), "https://a/b/d.m3u8");
-        assert_eq!(absolute("https://a/b/c.m3u8", "/d.m3u8"), "https://a/d.m3u8");
+        assert_eq!(
+            absolute("https://a/b/c.m3u8", "d.m3u8"),
+            "https://a/b/d.m3u8"
+        );
+        assert_eq!(
+            absolute("https://a/b/c.m3u8", "/d.m3u8"),
+            "https://a/d.m3u8"
+        );
     }
 }
