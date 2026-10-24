@@ -221,6 +221,8 @@ LRC:  [00:15.43]然后呢
 
 默认模板：`{album_artist}/{album} ({year})/{tracknum:02d} {title}.m4a`
 
+模板写错会被直接拒绝（HTTP 400），不会静默生成奇怪的目录：花括号必须成对，占位符必须是已知的（`album_artist` / `album` / `year` / `tracknum` / `title` 等）。
+
 目录名默认**不带音质标签**——同一张专辑换码率重下会覆盖同一个目录，而不是并排两个。
 
 如果确实想按音质分目录，把 `[{quality}]` 加回 `album_dir` 即可。`{quality}` 是**实际解析到的音质**，不是请求里写的档位：

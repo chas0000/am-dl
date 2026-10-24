@@ -223,3 +223,8 @@ button.small { padding: 5px 10px; font-size: 12px; }
 .album-head.has-failed small { color: var(--err); }
 .items.only-failed .album-head:not(.has-failed) { display: none; }
 .item-filter .album-count { margin-left: 8px; opacity: .7; }
+
+input.bad {
+  border-color: #d9534f;
+  outline: 1px solid #d9534f;
+}

@@ -297,6 +297,71 @@ fn err(status: StatusCode, msg: impl Into<String>) -> Response {
 
 /* ---------- 接口 ---------- */
 
+/// 模板里允许出现的占位符，和 `tags::ctx_value` 保持一致
+const TEMPLATE_KEYS: &[&str] = &[
+    "title",
+    "artist",
+    "album",
+    "album_artist",
+    "composer",
+    "genre",
+    "tracknum",
+    "tracktotal",
+    "disc",
+    "disk",
+    "disctotal",
+    "disktotal",
+    "year",
+    "release_date",
+    "quality",
+    "song_id",
+    "album_id",
+    "artist_id",
+    "isrc",
+    "upc",
+    "record_label",
+    "copyright",
+    "playlist",
+    "index",
+];
+
+/// 校验目录/文件名模板：`{` 必须闭合，占位符必须认识。
+///
+/// 写错一个花括号（比如 `{album_artist/{album} ({year})}`）时，渲染会原样留下
+/// 半截占位符，最后在下载根目录里建出 `(2020)}` 这种目录——宁可报错也不要静默出错。
+fn validate_template(kind: &str, template: &str) -> Result<(), String> {
+    let mut rest = template;
+    while let Some(start) = rest.find('{') {
+        let Some(end) = rest[start..].find('}') else {
+            return Err(format!(
+                "{kind} 模板里的 `{{` 没有闭合：`{}`。占位符要写成 `{{album_artist}}` 这样成对的花括号",
+                &rest[start..]
+            ));
+        };
+        let token = &rest[start + 1..start + end];
+        // 里面又出现 `{`，说明前一个花括号忘了闭合
+        if token.contains('{') {
+            return Err(format!(
+                "{kind} 模板里的 `{{` 没有闭合：`{}`。占位符要写成 `{{album_artist}}` 这样成对的花括号",
+                &rest[start..]
+            ));
+        }
+        let name = token.split(':').next().unwrap_or("").trim();
+        if !TEMPLATE_KEYS.contains(&name) {
+            return Err(format!(
+                "{kind} 模板里的 `{{{token}}}` 不是有效占位符（可用：album_artist / album / year / tracknum / title …）"
+            ));
+        }
+        rest = &rest[start + end + 1..];
+    }
+    if rest.contains('}') {
+        return Err(format!(
+            "{kind} 模板里有孤立的 `}}`：`{rest}`，占位符要写成 `{{album}}` 这样成对的花括号"
+        ));
+    }
+    Ok(())
+}
+
 /// 并发上限：再高只会把 wrapper-lite 和带宽打满
 const MAX_CONCURRENCY: usize = 16;
 
@@ -490,9 +555,15 @@ async fn create_handler(
         options.dest = v;
     }
     if let Some(v) = body.album_dir.filter(|v| !v.trim().is_empty()) {
+        if let Err(e) = validate_template("album_dir", &v) {
+            return err(StatusCode::BAD_REQUEST, e);
+        }
         options.album_dir = v;
     }
     if let Some(v) = body.track_file.filter(|v| !v.trim().is_empty()) {
+        if let Err(e) = validate_template("track_file", &v) {
+            return err(StatusCode::BAD_REQUEST, e);
+        }
         options.track_file = v;
     }
     if let Some(v) = body.write_tags {
@@ -1046,4 +1117,32 @@ fn free_bytes(path: &Path) -> u64 {
     }
     let buf = unsafe { buf.assume_init() };
     buf.f_bavail.saturating_mul(buf.f_frsize)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_template;
+
+    #[test]
+    fn template_accepts_valid() {
+        assert!(validate_template("album_dir", "{album_artist}/{album} ({year})").is_ok());
+        assert!(validate_template("track_file", "{tracknum:02d} {title}").is_ok());
+    }
+
+    #[test]
+    fn template_rejects_unclosed_brace() {
+        let e = validate_template("album_dir", "{album_artist/{album} ({year})}").unwrap_err();
+        assert!(e.contains("没有闭合"), "{e}");
+    }
+
+    #[test]
+    fn template_rejects_unknown_placeholder() {
+        let e = validate_template("album_dir", "{artist}/{albun}").unwrap_err();
+        assert!(e.contains("不是有效占位符"), "{e}");
+    }
+
+    #[test]
+    fn template_rejects_stray_brace() {
+        assert!(validate_template("track_file", "{title}}").is_err());
+    }
 }

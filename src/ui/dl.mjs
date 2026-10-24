@@ -55,6 +55,19 @@ const ITEM_TEXT = {
   queued: '排队', running: '下载中', done: '完成', failed: '失败', skipped: '已存在', canceled: '取消',
 };
 
+// 模板自查：花括号必须成对，否则服务端会 400，这里先拦一下更直观
+function checkTemplate(input) {
+  const v = input.value.trim();
+  const open = (v.match(/\{/g) || []).length;
+  const close = (v.match(/\}/g) || []).length;
+  if (open !== close) {
+    input.classList.add('bad');
+    throw new Error(`模板花括号不配对（${open} 个 { 对 ${close} 个 }）：${v}`);
+  }
+  input.classList.remove('bad');
+  return v;
+}
+
 function msg(text, kind = '') {
   const el = $('msg');
   el.textContent = text;
@@ -119,8 +132,8 @@ async function start() {
       dest,
       quality: $('quality').value,
       max_sample_rate: Number($('rate').value) || 0,
-      album_dir: $('albumDir').value,
-      track_file: $('trackFile').value,
+      album_dir: checkTemplate($('albumDir')),
+      track_file: checkTemplate($('trackFile')),
       write_tags: $('tags').checked,
       embed_cover: $('cover').checked,
       lyrics: $('lyrics').value,
