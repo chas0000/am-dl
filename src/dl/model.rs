@@ -89,6 +89,9 @@ pub struct TrackSpec {
     /// 歌词要用的歌曲 id（国区匹配成功时是国区的 id；空 = 用 adam_id）
     #[serde(default)]
     pub lyrics_id: String,
+    /// 国区元数据里这张专辑的歌手名（只用来给歌手任务挑顶层目录名，不写标签）
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub cn_album_artist: String,
     /// 这条是 MV（走 PlayReady + 音视频合并）
     #[serde(default)]
     pub is_mv: bool,

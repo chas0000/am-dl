@@ -527,7 +527,7 @@ pub async fn enrich_cn(
     let mut albums: Vec<String> = Vec::new();
 
     for chunk in isrcs.chunks(25) {
-        let query = format!("filter[isrc]={}&limit=25", chunk.join(","));
+        let query = format!("filter[isrc]={}&limit=25&include=albums", chunk.join(","));
         let value = match state.amp.catalog_json("catalog/cn/songs", &query).await {
             Ok(v) => v,
             Err(e) => {
@@ -545,6 +545,12 @@ pub async fn enrich_cn(
             let album = a.get("albumName").and_then(|v| v.as_str()).unwrap_or("");
             let artist = a.get("artistName").and_then(|v| v.as_str()).unwrap_or("");
             let id = item.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            // 国区这张专辑的歌手名，用于歌手任务的顶层目录
+            let cn_album_artist = item
+                .pointer("/relationships/albums/data/0/attributes/artistName")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
             if name.is_empty() || (!has_cjk(name) && !has_cjk(album) && !has_cjk(artist)) {
                 continue;
             }
@@ -563,6 +569,9 @@ pub async fn enrich_cn(
                 }
                 if !id.is_empty() {
                     t.lyrics_id = id.to_string();
+                }
+                if !cn_album_artist.is_empty() {
+                    t.cn_album_artist = cn_album_artist.clone();
                 }
                 albums.push(t.album.clone());
                 matched += 1;

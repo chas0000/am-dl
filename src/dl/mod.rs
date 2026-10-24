@@ -297,6 +297,28 @@ fn err(status: StatusCode, msg: impl Into<String>) -> Response {
 
 /* ---------- 接口 ---------- */
 
+/// 歌手任务的顶层目录名：优先用国区歌手名里出现最多的那个（且带中文），
+/// 否则退回链接里的歌手名。
+fn artist_name_for_job(tracks: &[model::TrackSpec], fallback: &str) -> String {
+    use std::collections::HashMap;
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    for t in tracks {
+        if !t.cn_album_artist.is_empty()
+            && t.cn_album_artist
+                .chars()
+                .any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c))
+        {
+            *counts.entry(t.cn_album_artist.as_str()).or_default() += 1;
+        }
+    }
+    counts
+        .into_iter()
+        .max_by_key(|(_, n)| *n)
+        .map(|(name, _)| name.to_string())
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| fallback.to_string())
+}
+
 /// 模板里允许出现的占位符，和 `tags::ctx_value` 保持一致
 const TEMPLATE_KEYS: &[&str] = &[
     "title",
@@ -607,6 +629,17 @@ async fn create_handler(
         let storefront = resolve::storefront_of(&body.url);
         if let Some(album) = resolve::enrich_cn(&state, &mut tracks, &storefront).await {
             title = album;
+        }
+    }
+    // 歌手任务：国区元数据是按「曲目」覆盖的，合作曲目会把 album_artist 改成
+    // 「万芳 & 孙建平」这类组合名，顶层目录就又散开了。这里再拉回歌手名。
+    // 用了国区元数据时优先取国区歌手名（Wanfang → 万芳），取出现次数最多的那个。
+    if kind == "artist" {
+        let top = artist_name_for_job(&tracks, &artist);
+        if !top.is_empty() {
+            for t in tracks.iter_mut() {
+                t.album_artist = top.clone();
+            }
         }
     }
     if let Some(limit) = body.limit {
@@ -1122,6 +1155,23 @@ fn free_bytes(path: &Path) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::validate_template;
+
+    #[test]
+    fn artist_name_prefers_cn_majority() {
+        use super::model::TrackSpec;
+        let a = TrackSpec {
+            cn_album_artist: "万芳".into(),
+            ..Default::default()
+        };
+        let b = TrackSpec {
+            cn_album_artist: "万芳 & 孙建平".into(),
+            ..Default::default()
+        };
+        let tracks = vec![a.clone(), a.clone(), b];
+        assert_eq!(super::artist_name_for_job(&tracks, "Wanfang"), "万芳");
+        // 没有国区数据时退回链接里的名字
+        assert_eq!(super::artist_name_for_job(&[], "Wanfang"), "Wanfang");
+    }
 
     #[test]
     fn template_accepts_valid() {
