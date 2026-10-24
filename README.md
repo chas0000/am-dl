@@ -146,6 +146,26 @@ curl -s -X POST "$BASE/api/dl/jobs/batch" -H 'content-type: application/json' \
 
 `/dl` 的子项列表按专辑分组，每组显示「完成/总数 · 失败数」；有失败项时会多一个「只看失败」开关，勾上只留失败曲目和它们所属的专辑。列表刷新会保留滚动位置，不再每 3 秒跳回顶部。
 
+## 整理散落的歌手目录
+
+早期版本按 `albumArtist` 建目录，合作专辑会在顶层多建一个歌手文件夹（`陈淑桦 & 罗大佑`、`OK 男女合唱團 & Lo Ta-You`…），同一张专辑的曲目还可能被拆到几个目录里。
+
+`scripts/merge-artists.py` 可以把它们合并回主目录：
+
+```bash
+# 先看计划（不动文件）
+python3 scripts/merge-artists.py --root /mnt/disk1/AM-DL --target 罗大佑 \
+  --sources "Lo Ta-You" "罗大佑 & 春龙交响乐团" "OK 男女合唱团"
+
+# 执行，并把 ALBUMARTIST 统一成主歌手（ARTIST 保持原样）
+python3 scripts/merge-artists.py --root /mnt/disk1/AM-DL --target 罗大佑 \
+  --sources "Lo Ta-You" "罗大佑 & 春龙交响乐团" "OK 男女合唱团" --apply --fix-tags
+```
+
+- 用 opencc 繁转简匹配，`寶島鹹酸甜` 和 `宝岛咸酸甜` 会认成同一张专辑
+- 重名曲目跳过、不覆盖；每步都记在 `<root>/.merge-log.txt`
+- 支持专辑下再按曲目建子目录的结构
+
 ## 并发数
 
 同时下载的曲目数可以直接在 `/dl` 页面右上角的「并发」里改，**立即生效**，不用重启：
