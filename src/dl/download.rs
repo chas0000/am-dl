@@ -437,8 +437,16 @@ pub async fn download_track(
 
     // 6. 歌词（可选）：TTML → LRC / 纯文本
     let want_lyrics = opts.lyrics != "none";
+    // 国区匹配成功时用国区 id 取歌词（简体）
+    let lyrics_id = if spec.lyrics_id.is_empty() {
+        spec.adam_id.clone()
+    } else {
+        spec.lyrics_id.clone()
+    };
+    // 开了国区元数据就要简体歌词：wrapper-lite 支持 language=zh-Hans
+    let lyrics_lang = if opts.cn_meta { Some("zh-Hans") } else { None };
     let lyrics = if want_lyrics {
-        match state.wrapper.fetch_lyrics(&spec.adam_id, None).await {
+        match state.wrapper.fetch_lyrics(&lyrics_id, lyrics_lang).await {
             Ok(crate::wrapper::Lyrics::Found(ttml)) => {
                 Some((crate::dl::lyrics::ttml_to_lrc(&ttml, opts.syllable), ttml))
             }

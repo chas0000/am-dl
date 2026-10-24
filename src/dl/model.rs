@@ -86,6 +86,9 @@ pub struct TrackSpec {
     pub artist_id: String,
     #[serde(default)]
     pub playlist: String,
+    /// 歌词要用的歌曲 id（国区匹配成功时是国区的 id；空 = 用 adam_id）
+    #[serde(default)]
+    pub lyrics_id: String,
     /// 这条是 MV（走 PlayReady + 音视频合并）
     #[serde(default)]
     pub is_mv: bool,
@@ -122,6 +125,9 @@ pub struct JobOptions {
     /// 已存在的同名文件跳过（断点续传）
     #[serde(default = "default_true")]
     pub skip_existing: bool,
+    /// 用国区（cn）的中文元数据覆盖名称/专辑/歌手，并用国区的歌词
+    #[serde(default = "default_true")]
+    pub cn_meta: bool,
 }
 
 fn default_true() -> bool {
@@ -151,6 +157,7 @@ impl Default for JobOptions {
             lyrics: default_lyrics(),
             syllable: false,
             skip_existing: true,
+            cn_meta: true,
         }
     }
 }

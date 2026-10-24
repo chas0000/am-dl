@@ -126,6 +126,7 @@ async function start() {
       lyrics: $('lyrics').value,
       syllable: $('syllable').checked,
       skip_existing: $('skip').checked,
+      cn_meta: $('cnMeta').checked,
     };
     const res = await api('/api/dl/jobs', { method: 'POST', body, raw: true });
     const job = res.data;

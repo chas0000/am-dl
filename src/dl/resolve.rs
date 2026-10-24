@@ -1,5 +1,6 @@
 //! 把 Apple Music 链接解析成曲目列表（专辑 / 歌单 / 单曲），走服务端已有的 amp-api 代理。
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::LazyLock;
 
@@ -482,4 +483,95 @@ async fn resolve_artist(
         artist: name,
         tracks,
     })
+}
+
+/// 有没有汉字（用来判断国区条目是不是真给了中文名）
+fn has_cjk(s: &str) -> bool {
+    s.chars()
+        .any(|c| matches!(c, '\u{3400}'..='\u{9fff}' | '\u{f900}'..='\u{faff}'))
+}
+
+/// 用国区（cn）的元数据覆盖曲目名称 / 专辑 / 歌手，并把歌词 id 换成国区的。
+///
+/// 只按 ISRC 匹配，且只接受带汉字的条目——国区没有这首歌时保持原样。
+/// 返回被覆盖的专辑名（全部一致时），便于同步任务标题。
+pub async fn enrich_cn(
+    state: &Arc<AppState>,
+    tracks: &mut [TrackSpec],
+    storefront: &str,
+) -> Option<String> {
+    if storefront == "cn" {
+        return None;
+    }
+
+    // isrc → 曲目下标（同一首歌可能在专辑里出现多次）
+    let mut index: HashMap<String, Vec<usize>> = HashMap::new();
+    for (i, t) in tracks.iter().enumerate() {
+        if !t.isrc.is_empty() && !t.is_mv {
+            index.entry(t.isrc.clone()).or_default().push(i);
+        }
+    }
+    if index.is_empty() {
+        return None;
+    }
+
+    let mut isrcs: Vec<String> = index.keys().cloned().collect();
+    isrcs.sort();
+    let mut matched = 0usize;
+    let mut albums: Vec<String> = Vec::new();
+
+    for chunk in isrcs.chunks(25) {
+        let query = format!("filter[isrc]={}&limit=25", chunk.join(","));
+        let value = match state.amp.catalog_json("catalog/cn/songs", &query).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::debug!(error = %e, "国区元数据查询失败，保留原样");
+                continue;
+            }
+        };
+        let Some(items) = value.get("data").and_then(|d| d.as_array()) else {
+            continue;
+        };
+        for item in items {
+            let a = &item["attributes"];
+            let isrc = a.get("isrc").and_then(|v| v.as_str()).unwrap_or("");
+            let name = a.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            let album = a.get("albumName").and_then(|v| v.as_str()).unwrap_or("");
+            let artist = a.get("artistName").and_then(|v| v.as_str()).unwrap_or("");
+            let id = item.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            if name.is_empty() || (!has_cjk(name) && !has_cjk(album) && !has_cjk(artist)) {
+                continue;
+            }
+            let Some(list) = index.get(isrc) else {
+                continue;
+            };
+            for &i in list {
+                let t = &mut tracks[i];
+                t.title = name.to_string();
+                if !album.is_empty() {
+                    t.album = album.to_string();
+                }
+                if !artist.is_empty() {
+                    t.artist = artist.to_string();
+                    t.album_artist = artist.to_string();
+                }
+                if !id.is_empty() {
+                    t.lyrics_id = id.to_string();
+                }
+                albums.push(t.album.clone());
+                matched += 1;
+            }
+        }
+    }
+
+    if matched == 0 {
+        tracing::debug!("国区没有匹配到中文元数据");
+        return None;
+    }
+    tracing::info!(matched, "已用国区中文元数据覆盖曲目");
+    let first = albums.first().cloned();
+    match first {
+        Some(a) if albums.iter().all(|x| *x == a) => Some(a),
+        _ => None,
+    }
 }

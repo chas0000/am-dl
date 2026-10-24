@@ -376,6 +376,9 @@ struct CreateBody {
     syllable: Option<bool>,
     #[serde(default)]
     skip_existing: Option<bool>,
+    /// 用国区中文元数据（默认开）
+    #[serde(default)]
+    cn_meta: Option<bool>,
     /// 只下载前 N 首（试跑用）
     #[serde(default)]
     limit: Option<usize>,
@@ -443,8 +446,11 @@ async fn create_handler(
     if let Some(v) = body.skip_existing {
         options.skip_existing = v;
     }
+    if let Some(v) = body.cn_meta {
+        options.cn_meta = v;
+    }
 
-    let (kind, title, artist, mut tracks) = if let Some(tracks) = body.tracks {
+    let (kind, mut title, artist, mut tracks) = if let Some(tracks) = body.tracks {
         let title = body.title.clone().unwrap_or_else(|| "手动任务".into());
         ("manual".to_string(), title, String::new(), tracks)
     } else {
@@ -453,6 +459,13 @@ async fn create_handler(
             Err(e) => return err(StatusCode::BAD_GATEWAY, e),
         }
     };
+    // 用国区（cn）的中文元数据覆盖名称 / 专辑 / 歌手，并改用国区歌词
+    if options.cn_meta && kind != "manual" {
+        let storefront = resolve::storefront_of(&body.url);
+        if let Some(album) = resolve::enrich_cn(&state, &mut tracks, &storefront).await {
+            title = album;
+        }
+    }
     if let Some(limit) = body.limit {
         tracks.truncate(limit);
     }
