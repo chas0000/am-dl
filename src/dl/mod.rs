@@ -9,7 +9,8 @@
 //! - `AM_DL_CONCURRENCY` 同时下载的曲目数，默认 2
 
 pub mod download;
-pub mod lyrics;
+pub mod limit;
+mod lyrics;
 pub mod m3u8;
 pub mod model;
 pub mod mv;
@@ -30,7 +31,6 @@ use axum::{Json, Router};
 use futures::StreamExt;
 use serde::Deserialize;
 use serde_json::json;
-use tokio::sync::Semaphore;
 
 use crate::config::AppState;
 use crate::dl::model::{Handle, Item, Job, JobOptions, Quality, Status, TrackSpec};
@@ -44,8 +44,9 @@ pub struct DlState {
     pub temp: PathBuf,
     pub jobs_dir: PathBuf,
     pub token: Option<String>,
+    /// 初始并发（来自 env / 部署脚本）；运行时以 limit 为准
     pub concurrency: usize,
-    pub sem: Arc<Semaphore>,
+    pub limit: Arc<limit::Limit>,
     pub handles: RwLock<HashMap<String, Arc<Handle>>>,
 }
 
@@ -78,11 +79,22 @@ impl DlState {
         let token = std::env::var("AM_DL_TOKEN")
             .ok()
             .filter(|v| !v.trim().is_empty());
-        let concurrency = std::env::var("AM_DL_CONCURRENCY")
+        let mut concurrency = std::env::var("AM_DL_CONCURRENCY")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
             .filter(|v| *v > 0)
             .unwrap_or(2);
+        // 页面上改过的并发存在 <root>/.settings.json，优先于环境变量
+        let settings_file = root.join(".settings.json");
+        if let Ok(text) = std::fs::read_to_string(&settings_file) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                if let Some(n) = v.get("concurrency").and_then(|x| x.as_u64()) {
+                    if n > 0 {
+                        concurrency = n as usize;
+                    }
+                }
+            }
+        }
         Self {
             roots,
             root,
@@ -90,7 +102,7 @@ impl DlState {
             jobs_dir,
             token,
             concurrency,
-            sem: Arc::new(Semaphore::new(concurrency)),
+            limit: Arc::new(limit::Limit::new(concurrency)),
             handles: RwLock::new(HashMap::new()),
         }
     }
@@ -199,6 +211,10 @@ pub fn router() -> Router<Arc<AppState>> {
             get(|| async { format!("am-dl {}", crate::VERSION) }),
         )
         .route("/api/dl/config", get(config_handler))
+        .route(
+            "/api/dl/settings",
+            get(settings_handler).post(settings_update),
+        )
         .route("/api/dl/preview", post(preview_handler))
         .route("/api/dl/jobs", get(list_handler).post(create_handler))
         .route("/api/dl/jobs/:id", get(get_handler))
@@ -281,6 +297,60 @@ fn err(status: StatusCode, msg: impl Into<String>) -> Response {
 
 /* ---------- 接口 ---------- */
 
+/// 并发上限：再高只会把 wrapper-lite 和带宽打满
+const MAX_CONCURRENCY: usize = 16;
+
+#[derive(serde::Deserialize)]
+struct SettingsBody {
+    concurrency: usize,
+}
+
+async fn settings_handler(
+    State(_s): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(q): Query<TokenQuery>,
+) -> Response {
+    let dl = dl();
+    if !authorized(dl, &headers, &q) {
+        return unauthorized();
+    }
+    Json(json!({
+        "code": 0,
+        "data": {
+            "concurrency": dl.limit.get(),
+            "active": dl.limit.active(),
+            "max": MAX_CONCURRENCY,
+        }
+    }))
+    .into_response()
+}
+
+/// 运行时调整并发：立即生效，并写入 `<root>/.settings.json` 供下次启动使用
+async fn settings_update(
+    State(_s): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(q): Query<TokenQuery>,
+    Json(body): Json<SettingsBody>,
+) -> Response {
+    let dl = dl();
+    if !authorized(dl, &headers, &q) {
+        return unauthorized();
+    }
+    let n = body.concurrency.clamp(1, MAX_CONCURRENCY);
+    dl.limit.set(n);
+    let path = dl.root.join(".settings.json");
+    let payload = json!({ "concurrency": n });
+    if let Err(e) = std::fs::write(&path, payload.to_string()) {
+        tracing::warn!(error = %e, "写入 .settings.json 失败，本次调整仍然生效");
+    }
+    tracing::info!(concurrency = n, "并发已调整");
+    Json(json!({
+        "code": 0,
+        "data": { "concurrency": dl.limit.get(), "active": dl.limit.active(), "max": MAX_CONCURRENCY }
+    }))
+    .into_response()
+}
+
 async fn config_handler(
     State(_state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -301,7 +371,9 @@ async fn config_handler(
             "root": dl.root.display().to_string(),
             "roots": roots,
             "free_bytes": free_bytes(&dl.root),
-            "concurrency": dl.concurrency,
+            "concurrency": dl.limit.get(),
+            "concurrency_max": MAX_CONCURRENCY,
+            "concurrency_active": dl.limit.active(),
             "token_required": dl.token.is_some(),
             "qualities": ["best", "alac", "atmos", "aac", "aac-binaural", "aac-downmix", "heaac"],
         }
@@ -575,8 +647,7 @@ async fn run_job(state: Arc<AppState>, handle: Arc<Handle>) {
                 return;
             }
 
-            let permit = dl.sem.clone().acquire_owned().await;
-            let Ok(_permit) = permit else { return };
+            let _permit = dl.limit.acquire().await;
 
             let spec = {
                 let job = handle.job.lock().unwrap();
@@ -661,7 +732,7 @@ async fn run_job(state: Arc<AppState>, handle: Arc<Handle>) {
             persist(&handle);
         }
     }))
-    .buffer_unordered(dl.concurrency.max(1));
+    .buffer_unordered(16);
 
     while tasks.next().await.is_some() {}
 

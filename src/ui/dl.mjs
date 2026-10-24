@@ -341,7 +341,22 @@ async function boot() {
   try {
     const cfg = await api('/api/dl/config');
     $('root').textContent = cfg.root;
-    $('free').textContent = `剩余 ${fmtBytes(cfg.free_bytes)} · 并发 ${cfg.concurrency}`;
+    $('free').textContent = `剩余 ${fmtBytes(cfg.free_bytes)}`;
+    const conc = $('conc');
+    conc.value = cfg.concurrency;
+    conc.max = cfg.concurrency_max || 16;
+    conc.onchange = async () => {
+      const max = cfg.concurrency_max || 16;
+      const n = Math.max(1, Math.min(max, Math.round(Number(conc.value) || 1)));
+      try {
+        const d = await api('/api/dl/settings', { method: 'POST', body: { concurrency: n } });
+        conc.value = d.concurrency;
+        msg(`并发已设为 ${d.concurrency}（正在下载 ${d.active} 首）`, 'ok');
+      } catch (e) {
+        conc.value = cfg.concurrency;
+        msg(e.message, 'error');
+      }
+    };
     const sel = $('rootSel');
     sel.innerHTML = (cfg.roots || [{ path: cfg.root, free_bytes: cfg.free_bytes }])
       .map((r) => `<option value="${escapeHtml(r.path)}">${escapeHtml(r.path)} · 剩 ${fmtBytes(r.free_bytes)}</option>`)
