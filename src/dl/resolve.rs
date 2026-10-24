@@ -475,6 +475,12 @@ async fn resolve_artist(
         return Err(format!("没有取到任何曲目（{} 张专辑失败）", failed));
     }
 
+    // 歌手任务统一用「当前下载的歌手」当上层目录：
+    // 合作专辑（如「陈淑桦 & 罗大佑」）不再单独拉出一个顶层歌手文件夹
+    for t in tracks.iter_mut() {
+        t.album_artist = name.clone();
+    }
+
     Ok(Resolved {
         kind: "artist".into(),
         id: artist_id.to_string(),
