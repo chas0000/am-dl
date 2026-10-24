@@ -50,7 +50,7 @@ source = "git+https://github.com/itouakirai/am-hook?branch=main#f435e077671d7798
 
 [[package]]
 name = "am-dl"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "am-media",
  "am-mp4",
