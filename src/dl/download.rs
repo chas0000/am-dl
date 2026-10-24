@@ -160,9 +160,173 @@ pub async fn plan_label(
     }
     let master = master_url(state, &spec.adam_id).await?;
     let master_text = fetch_text(state, &master).await?;
-    let variants = m3u8::parse_master_variants(&master_text)?;
+    let variants = m3u8::parse_master_variants(&master_text).unwrap_or_default();
+    if variants.is_empty() {
+        // 没有 master 的歌只能走 /webplayback 的 Widevine AAC-LC
+        return Ok("AAC 256".to_string());
+    }
     let variant = m3u8::pick_variant(&variants, opts.quality, opts.max_sample_rate)?;
     Ok(variant.short_label())
+}
+
+/// 取播放列表：优先 master（FairPlay）；没有 master 的歌退回 `/webplayback` 的 Widevine cenc。
+async fn resolve_track(
+    state: &Arc<AppState>,
+    spec: &TrackSpec,
+    opts: &JobOptions,
+) -> Result<(m3u8::Track, String, String), String> {
+    if let Ok(master) = master_url(state, &spec.adam_id).await {
+        let master_text = fetch_text(state, &master).await?;
+        // 没有变体时 parse 会报错，这里当成「没有 master」继续回退
+        let variants = m3u8::parse_master_variants(&master_text).unwrap_or_default();
+        if !variants.is_empty() {
+            let variant = m3u8::pick_variant(&variants, opts.quality, opts.max_sample_rate)?;
+            let quality = variant.label();
+            let media_url = m3u8::absolute(&master, &variant.uri);
+            let media_text = fetch_text(state, &media_url).await?;
+            let track = m3u8::parse_media_m3u8(&media_url, &media_text)?;
+            let file_url = m3u8::absolute(&media_url, &track.file_uri);
+            return Ok((track, file_url, quality));
+        }
+    }
+
+    // 这类歌只有 /webplayback 提供的 Widevine AAC-LC 256 流
+    let url = webplayback_url(state, &spec.adam_id).await?;
+    let text = fetch_text(state, &url).await?;
+    let track = m3u8::parse_media_m3u8(&url, &text)?;
+    let file_url = m3u8::absolute(&url, &track.file_uri);
+    tracing::info!(adam_id = %spec.adam_id, "没有 master，改用 Widevine AAC");
+    Ok((track, file_url, "AAC 256".to_string()))
+}
+
+/// `/webplayback` 返回的 m3u8 地址（MV 和没有 master 的歌曲都走这里）
+async fn webplayback_url(state: &Arc<AppState>, adam_id: &str) -> Result<String, String> {
+    let reply = state
+        .wrapper
+        .send(
+            state
+                .wrapper
+                .get("/webplayback")
+                .query(&[("adamId", adam_id)]),
+        )
+        .await
+        .map_err(|e| format!("请求 wrapper-lite /webplayback 失败: {e}"))?;
+    if !reply.status.is_success() {
+        return Err(format!(
+            "wrapper-lite /webplayback 返回 HTTP {}",
+            reply.status
+        ));
+    }
+    let v: serde_json::Value = reply
+        .json()
+        .map_err(|e| format!("解析 /webplayback 响应失败: {e}"))?;
+    if v.get("code").and_then(serde_json::Value::as_i64) != Some(0) {
+        let msg = v
+            .get("msg")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("未知错误");
+        return Err(format!("wrapper-lite 返回错误: {msg}"));
+    }
+    v.pointer("/data/m3u8")
+        .and_then(serde_json::Value::as_str)
+        .filter(|u| !u.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| "wrapper-lite 没有返回 m3u8 地址".to_string())
+}
+
+/// cenc init：去掉 sinf / pssh，还原成普通 mp4a，并取出解密参数
+fn cenc_init(raw: &[u8]) -> Result<(Vec<u8>, am_media::cenc::DecryptInfo), String> {
+    let mut atoms = am_media::bmff::parse(raw).map_err(|e| format!("解析 init 失败: {e}"))?;
+    let pos = atoms
+        .iter()
+        .position(|a| &a.kind == b"moov")
+        .ok_or("init 里没有 moov")?;
+    let mut moov = atoms.remove(pos);
+    let info =
+        am_media::cenc::decrypt_init(&mut moov).map_err(|e| format!("处理 cenc init 失败: {e}"))?;
+    atoms.insert(pos, moov);
+    let mut out = Vec::with_capacity(raw.len());
+    for a in &atoms {
+        a.encode(&mut out);
+    }
+    Ok((out, info))
+}
+
+/// Widevine：把 data: URI 里的 PSSH（或 16 字节 KID）变成 license 请求，取回内容密钥
+async fn widevine_key(state: &Arc<AppState>, adam_id: &str, uri: &str) -> Result<[u8; 16], String> {
+    use am_media::playready::Entropy;
+    use am_media::widevine::{cenc_header, cenc_header_for_kid, Cdm, Device};
+
+    let payload = uri
+        .split_once(',')
+        .map(|(_, p)| p)
+        .ok_or("Widevine URI 缺少数据段")?;
+    let decoded = am_media::crypto::base64_decode(payload).ok_or("Widevine URI 不是合法 base64")?;
+    let header = if decoded.len() == 16 {
+        cenc_header_for_kid(&decoded)
+    } else {
+        cenc_header(&decoded).map_err(|e| format!("解析 Widevine PSSH 失败: {e}"))?
+    };
+
+    // 这一段全是同步计算，放进块里，避免把带闭包的 Entropy 带过 await（否则 future 不是 Send）
+    let (mut cdm, session, challenge) = {
+        let mut fill = |buf: &mut [u8]| {
+            use std::io::Read;
+            if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
+                let _ = f.read_exact(buf);
+            }
+        };
+        let mut rng = Entropy(&mut fill);
+        let mut cdm = Cdm::new(Device::default_device().map_err(|e| e.to_string())?);
+        let session = cdm.open(&mut rng);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let challenge = cdm
+            .license_challenge(&session, &header, now, &mut rng)
+            .map_err(|e| format!("生成 Widevine challenge 失败: {e}"))?;
+        (cdm, session, challenge)
+    };
+
+    let body = serde_json::json!({
+        "adamId": adam_id,
+        "uri": uri,
+        "challenge": am_media::crypto::base64_encode(&challenge),
+        "drm-type": "wv",
+    });
+    let reply = state
+        .wrapper
+        .send(state.wrapper.post("/license").json(&body))
+        .await
+        .map_err(|e| format!("请求 wrapper-lite /license 失败: {e}"))?;
+    if !reply.status.is_success() {
+        cdm.close(&session);
+        return Err(format!("wrapper-lite /license 返回 HTTP {}", reply.status));
+    }
+    let v: serde_json::Value = reply
+        .json()
+        .map_err(|e| format!("解析 /license 响应失败: {e}"))?;
+    if v.get("code").and_then(serde_json::Value::as_i64) != Some(0) {
+        cdm.close(&session);
+        let msg = v
+            .get("msg")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("未知错误");
+        return Err(format!("wrapper-lite 返回错误: {msg}"));
+    }
+    let license = v
+        .pointer("/data/license")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "wrapper-lite 没有返回 license".to_string())?;
+    let raw = am_media::crypto::base64_decode(license.trim()).ok_or("license 不是合法 base64")?;
+    let keys = cdm
+        .parse_license(&session, &raw)
+        .map_err(|e| e.to_string())?;
+    cdm.close(&session);
+    keys.first()
+        .map(|(_, k)| *k)
+        .ok_or_else(|| "Widevine license 里没有内容密钥".to_string())
 }
 
 /// 下载并解密一首歌，输出到 `out_path`（.m4a）
@@ -174,29 +338,38 @@ pub async fn download_track(
     temp_dir: &Path,
     cancel: &AtomicBool,
 ) -> Result<Downloaded, String> {
-    // 1. master → 选变体
-    let master = master_url(state, &spec.adam_id).await?;
-    let master_text = fetch_text(state, &master).await?;
-    let variants = m3u8::parse_master_variants(&master_text)?;
-    let variant = m3u8::pick_variant(&variants, opts.quality, opts.max_sample_rate)?;
-    let quality = variant.label();
+    // 1-2. 播放列表：正常走 master，没有 master 的歌退回 /webplayback 的 Widevine
+    let (track, file_url, quality) = resolve_track(state, spec, opts).await?;
 
-    // 2. media m3u8 → 分片表
-    let media_url = m3u8::absolute(&master, &variant.uri);
-    let media_text = fetch_text(state, &media_url).await?;
-    let track = m3u8::parse_media_m3u8(&media_url, &media_text)?;
-    let file_url = m3u8::absolute(&media_url, &track.file_uri);
-
-    // 3. init 段（改写 enca → 原始编码，FairPlay box → free）
+    // 3. init 段
     let mut init = fetch_range_retry(state, &file_url, track.segments[0]).await?;
-    patch_init_in_place(&mut init);
+    let mut cenc_info: Option<Arc<am_media::cenc::DecryptInfo>> = None;
+    match track.kind {
+        // FairPlay：改写 enca → 原始编码，FairPlay box → free
+        m3u8::KeyKind::FairPlay => patch_init_in_place(&mut init),
+        // cenc：去掉 sinf / pssh，还原成普通 mp4a
+        m3u8::KeyKind::Cenc => {
+            let (clean, info) = cenc_init(&init)?;
+            init = clean;
+            cenc_info = Some(Arc::new(info));
+        }
+    }
 
-    // 4. 解密模板：一首歌可能有多个 key（中途换密钥），逐个取
+    // 4. 密钥：FairPlay 逐个 key 取模板（中途可能换密钥）；cenc 只取一个 Widevine 内容密钥
     let mut templates: std::collections::HashMap<u16, Arc<Template>> =
         std::collections::HashMap::new();
-    for (i, uri) in track.keys.iter().enumerate() {
-        let template_json = state.wrapper.fetch_key_json(&spec.adam_id, uri).await?;
-        templates.insert(i as u16, Arc::new(template_from_json(&template_json)?));
+    let mut cenc_key: Option<[u8; 16]> = None;
+    match track.kind {
+        m3u8::KeyKind::FairPlay => {
+            for (i, uri) in track.keys.iter().enumerate() {
+                let template_json = state.wrapper.fetch_key_json(&spec.adam_id, uri).await?;
+                templates.insert(i as u16, Arc::new(template_from_json(&template_json)?));
+            }
+        }
+        m3u8::KeyKind::Cenc => {
+            let uri = track.keys.first().ok_or("cenc 播放列表里没有 key")?;
+            cenc_key = Some(widevine_key(state, &spec.adam_id, uri).await?);
+        }
     }
 
     // 5. 分片：并发拉取 + 解密，按序写入临时 fMP4
@@ -221,10 +394,18 @@ pub async fn download_track(
             let seg = segments[idx];
             let template = seg.key.and_then(|k| templates.get(&k)).cloned();
             let alac = alac.clone();
+            let info = cenc_info.clone();
+            let ckey = cenc_key;
             async move {
                 let mut data = fetch_range_retry(&state, &url, seg).await?;
                 tokio::task::spawn_blocking(move || {
-                    // 按该分片实际生效的 key 解密；固定 key 段用内置模板
+                    if let (Some(info), Some(key)) = (info.as_ref(), ckey) {
+                        // Widevine / cenc：AES-CTR，密钥直接解
+                        am_media::cenc::decrypt_fragment_in_place(&mut data, info, &key)
+                            .map_err(|e| e.to_string())?;
+                        return Ok::<Vec<u8>, String>(data);
+                    }
+                    // FairPlay：按该分片实际生效的 key 解密；固定 key 段用内置模板
                     let tmpl: &Template = match &template {
                         Some(t) => t,
                         None => fixed_template(),

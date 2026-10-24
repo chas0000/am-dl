@@ -282,17 +282,40 @@ async function loadItems(id, host, ver, keepScroll = 0) {
     const job = await api(`/api/dl/jobs/${id}`);
     const scrollTop = keepScroll || host.scrollTop;
     const failed = job.items.filter((it) => it.status === 'failed').length;
+    // 按专辑分组，方便看是哪些专辑里的曲目失败
+    const groups = new Map();
+    for (const it of job.items) {
+      const key = it.spec.album || '未知专辑';
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(it);
+    }
     const bar = failed
-      ? `<li class="item-filter"><label><input type="checkbox" class="onlyFailed"> 只看失败（${failed}）</label></li>`
-      : '';
-    const html = bar + job.items.map((it) => `
-      <li class="item ${it.status}">
+      ? `<li class="item-filter"><label><input type="checkbox" class="onlyFailed"> 只看失败（${failed}）</label>
+         <span class="album-count">${groups.size} 张专辑</span></li>`
+      : (groups.size > 1 ? `<li class="item-filter"><span class="album-count">${groups.size} 张专辑</span></li>` : '');
+
+    const itemRow = (it) => `
+      <li class="item ${it.status}" data-album="${escapeHtml(it.spec.album || '')}">
         <span class="st">${ITEM_TEXT[it.status] || it.status}</span>
         <span class="t">${escapeHtml(it.spec.title)}</span>
         <span class="q">${escapeHtml(it.quality || '')}</span>
         <span class="sz">${it.bytes ? fmtBytes(it.bytes) : ''}</span>
         ${it.error ? `<span class="er" title="${escapeHtml(it.error)}">${escapeHtml(it.error.slice(0, 80))}</span>` : ''}
-      </li>`).join('');
+      </li>`;
+
+    let rows = '';
+    for (const [album, list] of groups) {
+      const done = list.filter((i) => i.status === 'done').length;
+      const bad = list.filter((i) => i.status === 'failed').length;
+      const skipped = list.filter((i) => i.status === 'skipped').length;
+      const bits = [`${done}/${list.length} 完成`];
+      if (skipped) bits.push(`${skipped} 已存在`);
+      if (bad) bits.push(`${bad} 失败`);
+      rows += `<li class="album-head${bad ? ' has-failed' : ''}">
+        <b>${escapeHtml(album)}</b><small>${bits.join(' · ')}</small></li>`;
+      rows += list.map(itemRow).join('');
+    }
+    const html = bar + rows;
     state.items.set(id, { ver, html });
     host.innerHTML = html;
     host.scrollTop = scrollTop;

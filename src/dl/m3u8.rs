@@ -11,7 +11,7 @@ use crate::dl::model::Quality;
 
 static ATTR_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"([A-Z0-9-]+)=("[^"]*"|[^,\r\n]+)"#).unwrap());
-static ADAM_ID_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"_A(\d+)_").unwrap());
+static ADAM_ID_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"_A(\d+)[._]").unwrap());
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Segment {
@@ -28,11 +28,19 @@ impl Segment {
     }
 }
 
-/// 一首歌的解密所需信息：key uri（skd://…）+ 分段字节范围
+/// 加密方式：FairPlay（SAMPLE-AES，skd://… 走 wrapper /key）或 Widevine（cenc，data: PSSH）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyKind {
+    FairPlay,
+    Cenc,
+}
+
+/// 一首歌的解密所需信息：key uri（skd://… 或 data:）+ 分段字节范围
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct Track {
     pub adam_id: String,
+    pub kind: KeyKind,
     /// 出现过的不重复 key（skd://…），按出现顺序；不含固定 key。
     /// 有些歌会在中途换密钥，所以不能只留一个。
     pub keys: Vec<String>,
@@ -299,6 +307,7 @@ pub fn parse_media_m3u8(source_url: &str, content: &str) -> Result<Track, String
         .map(|c| c[1].to_string())
         .ok_or_else(|| format!("无法从地址中解析出 _A<数字>_: {source_url}"))?;
 
+    let mut kind = KeyKind::FairPlay;
     let mut keys: Vec<String> = Vec::new();
     // 当前生效的 key；None = 固定 key
     let mut current_key: Option<u16> = None;
@@ -312,7 +321,22 @@ pub fn parse_media_m3u8(source_url: &str, content: &str) -> Result<Track, String
         if trimmed.starts_with("#EXT-X-KEY:") || trimmed.starts_with("#EXT-X-SESSION-KEY:") {
             let (_, attrs) = trimmed.split_once(':').unwrap();
             let attrs = attributes(attrs);
-            if attrs.get("METHOD") == Some(&"SAMPLE-AES") {
+            let method = attrs.get("METHOD").copied();
+            if method == Some("ISO-23001-7") {
+                // Widevine / cenc：URI 是 data:;base64,<pssh 或 KID>
+                kind = KeyKind::Cenc;
+                if let Some(u) = attrs.get("URI") {
+                    seen_key = true;
+                    let idx = match keys.iter().position(|k| k == u) {
+                        Some(i) => i,
+                        None => {
+                            keys.push(u.to_string());
+                            keys.len() - 1
+                        }
+                    };
+                    current_key = Some(idx as u16);
+                }
+            } else if method == Some("SAMPLE-AES") {
                 if let Some(u) = attrs.get("URI") {
                     seen_key = true;
                     // 关键：密钥可能在中途更换，必须逐段记录，不能只取第一个
@@ -329,7 +353,7 @@ pub fn parse_media_m3u8(source_url: &str, content: &str) -> Result<Track, String
                         Some(idx as u16)
                     };
                 }
-            } else if attrs.get("METHOD") == Some(&"NONE") {
+            } else if method == Some("NONE") {
                 current_key = None;
             }
             continue;
@@ -373,6 +397,7 @@ pub fn parse_media_m3u8(source_url: &str, content: &str) -> Result<Track, String
 
     Ok(Track {
         adam_id,
+        kind,
         keys,
         file_uri,
         segments,

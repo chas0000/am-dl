@@ -207,3 +207,19 @@ button.small { padding: 5px 10px; font-size: 12px; }
 }
 .item-filter label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
 .items.only-failed li.item:not(.failed) { display: none; }
+
+/* 子项按专辑分组 */
+.album-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 2px 4px;
+  margin-top: 4px;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+}
+.album-head b { font-weight: 600; }
+.album-head small { color: var(--dim); }
+.album-head.has-failed small { color: var(--err); }
+.items.only-failed .album-head:not(.has-failed) { display: none; }
+.item-filter .album-count { margin-left: 8px; opacity: .7; }
