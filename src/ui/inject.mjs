@@ -159,7 +159,12 @@ async function createJob(ui, url, quality) {
     const json = await res.json().catch(() => ({ code: 1, msg: `HTTP ${res.status}` }));
     if (json.code !== 0) throw new Error(json.msg || `HTTP ${res.status}`);
     const job = json.data;
-    toast(`已加入队列：${job.title || url}（${job.items.length} 首）`, `/dl?token=${encodeURIComponent(token())}`);
+    // 歌手链接会在服务端拆成「每张专辑一个任务」
+    const many = Array.isArray(json.jobs) ? json.jobs : [];
+    const text = many.length > 1
+      ? `已加入队列：${many.length} 张专辑，共 ${many.reduce((n, j) => n + (j.total || 0), 0)} 首`
+      : `已加入队列：${job.title || url}（${job.items.length} 首）`;
+    toast(text, `/dl?token=${encodeURIComponent(token())}`);
     ui.collapse();
   } catch (e) {
     toast(`提交失败：${e.message}`);

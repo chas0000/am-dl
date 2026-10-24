@@ -192,3 +192,18 @@ button.small { padding: 5px 10px; font-size: 12px; }
 .item.running .st { color: var(--warn); }
 .item .q, .item .sz { color: var(--dim); }
 .item .er { grid-column: 1 / -1; color: var(--err); font-size: 11px; opacity: .8; }
+
+/* 子项列表里的「只看失败」开关与过滤 */
+.item-filter {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 4px 2px 6px;
+  margin-bottom: 2px;
+  background: var(--bg, #fff);
+  font-size: 12px;
+  color: var(--dim);
+  border-bottom: 1px solid var(--line);
+}
+.item-filter label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.items.only-failed li.item:not(.failed) { display: none; }

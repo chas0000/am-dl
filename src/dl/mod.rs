@@ -460,24 +460,77 @@ async fn create_handler(
         return err(StatusCode::BAD_REQUEST, "没有可下载的曲目");
     }
 
-    let job = Job {
-        id: model::new_job_id(),
-        kind,
-        url: body.url,
-        title: title.clone(),
-        artist,
-        status: Status::Queued,
-        created_at: model::now(),
-        updated_at: model::now(),
-        options,
-        items: tracks.into_iter().map(Item::new).collect(),
-        error: None,
+    // 歌手链接：按专辑拆成多个顶层任务。
+    // 一个任务里塞几千条子项时，/dl 每 3 秒重绘整份列表，根本没法看失败项。
+    let groups: Vec<(String, String, Vec<model::TrackSpec>)> = if kind == "artist" {
+        split_by_album(tracks)
+    } else {
+        vec![(title, artist, tracks)]
     };
-    let handle = Handle::new(job);
-    dl.insert(handle.clone());
-    dl.persist(&handle.snapshot());
-    spawn_runner(state.clone(), handle.clone());
-    Json(json!({"code": 0, "data": handle.snapshot()})).into_response()
+
+    let mut created: Vec<Arc<Handle>> = Vec::new();
+    for (title, artist, items) in groups {
+        let job = Job {
+            id: model::new_job_id(),
+            kind: kind.clone(),
+            url: body.url.clone(),
+            title,
+            artist,
+            status: Status::Queued,
+            created_at: model::now(),
+            updated_at: model::now(),
+            options: options.clone(),
+            items: items.into_iter().map(Item::new).collect(),
+            error: None,
+        };
+        let handle = Handle::new(job);
+        dl.insert(handle.clone());
+        dl.persist(&handle.snapshot());
+        spawn_runner(state.clone(), handle.clone());
+        created.push(handle);
+    }
+
+    let first = created.first().map(|h| h.snapshot()).expect("至少一个任务");
+    let brief: Vec<_> = created
+        .iter()
+        .map(|h| {
+            let j = h.snapshot();
+            let (total, _, _) = j.counts();
+            json!({"id": j.id, "title": j.title, "total": total})
+        })
+        .collect();
+    Json(json!({
+        "code": 0,
+        "data": first,
+        "created": created.len(),
+        "jobs": brief,
+    }))
+    .into_response()
+}
+
+/// 按专辑分组，保持原有顺序；专辑 id 为空时退回「专辑名 + 年份」
+fn split_by_album(tracks: Vec<model::TrackSpec>) -> Vec<(String, String, Vec<model::TrackSpec>)> {
+    let mut order: Vec<String> = Vec::new();
+    let mut map: std::collections::HashMap<String, (String, String, Vec<model::TrackSpec>)> =
+        std::collections::HashMap::new();
+    for t in tracks {
+        let key = if !t.album_id.is_empty() {
+            t.album_id.clone()
+        } else {
+            format!("{}|{}", t.album, t.release_date)
+        };
+        let entry = map.entry(key.clone()).or_insert_with(|| {
+            order.push(key.clone());
+            let artist = if t.album_artist.is_empty() {
+                t.artist.clone()
+            } else {
+                t.album_artist.clone()
+            };
+            (t.album.clone(), artist, Vec::new())
+        });
+        entry.2.push(t);
+    }
+    order.into_iter().filter_map(|k| map.remove(&k)).collect()
 }
 
 fn spawn_runner(state: Arc<AppState>, handle: Arc<Handle>) {

@@ -2,7 +2,13 @@
 // 与上游前端零耦合：只依赖 /api/dl/*，上游更新前端不会影响这里。
 
 const $ = (id) => document.getElementById(id);
-const state = { preview: null, jobs: [], open: new Set(), picked: new Set(), token: '' };
+const state = {
+  preview: null, jobs: [], open: new Set(), picked: new Set(), token: '',
+  // job.id → { ver, html }：子项内容没变就不重绘，避免 3 秒一次的闪烁与滚动跳动
+  items: new Map(),
+  // 只看失败的任务
+  onlyFailed: new Set(),
+};
 
 /* ---------- 请求 ---------- */
 
@@ -10,7 +16,7 @@ function tokenParam() {
   return state.token ? `token=${encodeURIComponent(state.token)}` : '';
 }
 
-async function api(path, { method = 'GET', body } = {}) {
+async function api(path, { method = 'GET', body, raw = false } = {}) {
   const sep = path.includes('?') ? '&' : '?';
   const url = tokenParam() ? `${path}${sep}${tokenParam()}` : path;
   const res = await fetch(url, {
@@ -23,13 +29,13 @@ async function api(path, { method = 'GET', body } = {}) {
     if (t) {
       state.token = t.trim();
       localStorage.setItem('amdl-token', state.token);
-      return api(path, { method, body });
+      return api(path, { method, body, raw });
     }
     throw new Error('需要访问令牌');
   }
   const json = await res.json().catch(() => ({ code: 1, msg: `HTTP ${res.status}` }));
   if (json.code !== 0) throw new Error(json.msg || `HTTP ${res.status}`);
-  return json.data;
+  return raw ? json : json.data;
 }
 
 /* ---------- 工具 ---------- */
@@ -121,9 +127,18 @@ async function start() {
       syllable: $('syllable').checked,
       skip_existing: $('skip').checked,
     };
-    const job = await api('/api/dl/jobs', { method: 'POST', body });
-    msg(`已创建任务：${job.title}（${job.items.length} 首）`, 'ok');
-    state.open.add(job.id);
+    const res = await api('/api/dl/jobs', { method: 'POST', body, raw: true });
+    const job = res.data;
+    const many = Array.isArray(res.jobs) ? res.jobs : [];
+    if (many.length > 1) {
+      const total = many.reduce((n, j) => n + (j.total || 0), 0);
+      msg(`已加入队列：${many.length} 张专辑，共 ${total} 首`, 'ok');
+      // 默认全部展开会让列表很长，只展开第一个
+      state.open.add(many[0].id);
+    } else {
+      msg(`已创建任务：${job.title}（${job.items.length} 首）`, 'ok');
+      state.open.add(job.id);
+    }
     await refresh();
   } catch (e) {
     msg(e.message, 'error');
@@ -146,6 +161,13 @@ async function refresh() {
 
 function renderJobs(list) {
   const host = $('jobs');
+  const scrollY = window.scrollY;
+  // 每次重绘都会重建 DOM，先把各任务子项列表的滚动位置记下来
+  const innerScroll = new Map();
+  for (const n of host.querySelectorAll('.job')) {
+    const it = n.querySelector('.items');
+    if (it && n.dataset.id) innerScroll.set(n.dataset.id, it.scrollTop);
+  }
   host.innerHTML = '';
   if (!list.length) {
     host.innerHTML = '<p class="empty">还没有任务</p>';
@@ -172,9 +194,21 @@ function renderJobs(list) {
     node.querySelector('.job-sub').textContent = job.failed ? `${job.failed} 首失败` : `${pct}%`;
 
     const items = node.querySelector('.items');
+    const keepScroll = innerScroll.get(job.id) || 0;
     if (state.open.has(job.id)) {
       items.classList.remove('hidden');
-      loadItems(job.id, items);
+      const cached = state.items.get(job.id);
+      const done = ['done', 'failed', 'canceled', 'skipped'].includes(job.status);
+
+      if (cached) {
+        items.innerHTML = cached.html;
+        applyFilter(items, job.id);
+        // 已完成的任务内容不会再变；进行中的只在版本变了才重新拉
+        if (!done && cached.ver !== job.updated_at) loadItems(job.id, items, job.updated_at, keepScroll);
+      } else {
+        items.innerHTML = '<li class="item running"><span class="st">加载中…</span></li>';
+        loadItems(job.id, items, job.updated_at, keepScroll);
+      }
     }
     node.querySelector('.act-toggle').onclick = () => {
       if (state.open.has(job.id)) state.open.delete(job.id); else state.open.add(job.id);
@@ -194,11 +228,15 @@ function renderJobs(list) {
       catch (e) { msg(e.message, 'error'); }
     };
     host.appendChild(node);
+    // 必须挂到文档上之后再恢复滚动位置：游离节点的 scrollTop 赋值无效
+    if (state.open.has(job.id)) items.scrollTop = keepScroll;
   }
   // 已不存在的任务从选择集里剔掉
   const ids = new Set(list.map((j) => j.id));
   for (const id of [...state.picked]) if (!ids.has(id)) state.picked.delete(id);
+  for (const id of [...state.items.keys()]) if (!ids.has(id)) state.items.delete(id);
   updatePickInfo();
+  if (window.scrollY !== scrollY) window.scrollTo(0, scrollY);
 }
 
 function updatePickInfo() {
@@ -226,10 +264,28 @@ async function batch(action, body, okText) {
   }
 }
 
-async function loadItems(id, host) {
+// 「只看失败」开关：给容器加 class，由 CSS 隐藏其它行
+function applyFilter(host, id) {
+  host.classList.toggle('only-failed', state.onlyFailed.has(id));
+  const cb = host.querySelector('.onlyFailed');
+  if (cb) {
+    cb.checked = state.onlyFailed.has(id);
+    cb.onchange = () => {
+      if (cb.checked) state.onlyFailed.add(id); else state.onlyFailed.delete(id);
+      applyFilter(host, id);
+    };
+  }
+}
+
+async function loadItems(id, host, ver, keepScroll = 0) {
   try {
     const job = await api(`/api/dl/jobs/${id}`);
-    host.innerHTML = job.items.map((it) => `
+    const scrollTop = keepScroll || host.scrollTop;
+    const failed = job.items.filter((it) => it.status === 'failed').length;
+    const bar = failed
+      ? `<li class="item-filter"><label><input type="checkbox" class="onlyFailed"> 只看失败（${failed}）</label></li>`
+      : '';
+    const html = bar + job.items.map((it) => `
       <li class="item ${it.status}">
         <span class="st">${ITEM_TEXT[it.status] || it.status}</span>
         <span class="t">${escapeHtml(it.spec.title)}</span>
@@ -237,8 +293,13 @@ async function loadItems(id, host) {
         <span class="sz">${it.bytes ? fmtBytes(it.bytes) : ''}</span>
         ${it.error ? `<span class="er" title="${escapeHtml(it.error)}">${escapeHtml(it.error.slice(0, 80))}</span>` : ''}
       </li>`).join('');
+    state.items.set(id, { ver, html });
+    host.innerHTML = html;
+    host.scrollTop = scrollTop;
+    applyFilter(host, id);
   } catch (e) {
-    host.innerHTML = `<li class="item failed"><span class="er">${escapeHtml(e.message)}</span></li>`;
+    const html = `<li class="item failed"><span class="er">${escapeHtml(e.message)}</span></li>`;
+    host.innerHTML = html;
   }
 }
 
