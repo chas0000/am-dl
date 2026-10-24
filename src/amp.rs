@@ -16,6 +16,8 @@ const TOKEN_TTL: Duration = Duration::from_secs(12 * 3600);
 
 pub struct Amp {
     client: reqwest::Client,
+    /// 抓网页和 JS 包专用：包有好几 MB，链路差的时候 20 秒根本下不完，得能续传
+    web: reqwest::Client,
     token: Mutex<Option<(String, Instant)>>,
     script_re: Regex,
     jwt_re: Regex,
@@ -29,13 +31,73 @@ impl Amp {
             .user_agent(UA)
             .build()
             .expect("amp client");
+        let web = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .read_timeout(Duration::from_secs(60))
+            .user_agent(UA)
+            .build()
+            .expect("web client");
         Self {
             client,
+            web,
             token: Mutex::new(None),
             script_re: Regex::new(r#"src="(/assets/index[~-][0-9A-Za-z_-]+\.js)""#).unwrap(),
             jwt_re: Regex::new(r"eyJ[0-9A-Za-z_-]{10,}\.eyJ[0-9A-Za-z_-]{10,}\.[0-9A-Za-z_-]{10,}")
                 .unwrap(),
         }
+    }
+
+    /// 下载整个响应体，断了就用 Range 接着下。
+    ///
+    /// music.apple.com 的主 JS 包有好几 MB，某些时段只能跑到十几 KB/s，
+    /// 一次性 GET 必然超时；这里改成流式读 + 断点续传，最多试 6 轮。
+    async fn fetch_resumable(&self, url: &str) -> Result<String, String> {
+        use futures::StreamExt;
+
+        let mut buf: Vec<u8> = Vec::new();
+        let mut last_err = String::new();
+        for attempt in 0..6 {
+            let mut req = self.web.get(url);
+            if !buf.is_empty() {
+                req = req.header(reqwest::header::RANGE, format!("bytes={}-", buf.len()));
+                tracing::debug!(url, from = buf.len(), "续传 developer token 脚本");
+            }
+            let resp = match req.send().await {
+                Ok(r) => r,
+                Err(e) => {
+                    last_err = e.to_string();
+                    tokio::time::sleep(Duration::from_secs(1 + attempt)).await;
+                    continue;
+                }
+            };
+            // 服务器不认 Range 会回 200，得从头来
+            if resp.status() == reqwest::StatusCode::OK && !buf.is_empty() {
+                buf.clear();
+            }
+            if !resp.status().is_success() && resp.status() != reqwest::StatusCode::PARTIAL_CONTENT
+            {
+                last_err = format!("HTTP {}", resp.status());
+                tokio::time::sleep(Duration::from_secs(1 + attempt)).await;
+                continue;
+            }
+            let mut stream = resp.bytes_stream();
+            let mut broken = false;
+            while let Some(chunk) = stream.next().await {
+                match chunk {
+                    Ok(c) => buf.extend_from_slice(&c),
+                    Err(e) => {
+                        last_err = e.to_string();
+                        broken = true;
+                        break;
+                    }
+                }
+            }
+            if !broken {
+                return Ok(String::from_utf8_lossy(&buf).into_owned());
+            }
+            tokio::time::sleep(Duration::from_secs(1 + attempt)).await;
+        }
+        Err(format!("下载不完整（{} 字节）: {last_err}", buf.len()))
     }
 
     fn cached(&self) -> Option<String> {
@@ -51,14 +113,9 @@ impl Amp {
             return Ok(t);
         }
         let page = self
-            .client
-            .get(format!("{WEB_ORIGIN}/us/browse"))
-            .send()
+            .fetch_resumable(&format!("{WEB_ORIGIN}/us/browse"))
             .await
-            .map_err(|e| format!("获取 music.apple.com 失败: {e}"))?
-            .text()
-            .await
-            .map_err(|e| format!("读取 music.apple.com 失败: {e}"))?;
+            .map_err(|e| format!("获取 music.apple.com 失败: {e}"))?;
 
         let script = self
             .script_re
@@ -67,14 +124,9 @@ impl Amp {
             .ok_or("music.apple.com 页面里没找到主脚本")?;
 
         let js = self
-            .client
-            .get(format!("{WEB_ORIGIN}{script}"))
-            .send()
+            .fetch_resumable(&format!("{WEB_ORIGIN}{script}"))
             .await
-            .map_err(|e| format!("获取脚本失败: {e}"))?
-            .text()
-            .await
-            .map_err(|e| format!("读取脚本失败: {e}"))?;
+            .map_err(|e| format!("获取脚本失败: {e}"))?;
 
         let token = self
             .jwt_re

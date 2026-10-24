@@ -166,6 +166,20 @@ python3 scripts/merge-artists.py --root /mnt/disk1/AM-DL --target 罗大佑 \
 - 重名曲目跳过、不覆盖；每步都记在 `<root>/.merge-log.txt`
 - 支持专辑下再按曲目建子目录的结构
 
+## 去掉目录里的音质标签
+
+默认目录名不带音质，历史库里带 `[ALAC 24bit-96kHz]` 这种后缀的可以一次清掉：
+
+```bash
+python3 scripts/normalize-albums.py --root /mnt/disk1/AM-DL           # 预览
+python3 scripts/normalize-albums.py --root /mnt/disk1/AM-DL --apply   # 执行
+```
+
+- 同一张专辑存在多个音质目录时**逐曲目保留码率最高的那份**，其余移到 `<root>/.trash/<时间戳>/`（不直接删）
+- 判定"同一首歌"用曲名（去掉轨号、繁简归一），不按轨号——不同版本的同一轨号可能是不同的歌
+- 歌词/字幕跟着音频一起走，留下的孤儿 sidecar 会清掉
+- 改名记录写进 `<root>/.normalize-log.txt`
+
 ## 并发数
 
 同时下载的曲目数可以直接在 `/dl` 页面右上角的「并发」里改，**立即生效**，不用重启：
@@ -205,9 +219,11 @@ LRC:  [00:15.43]然后呢
 
 ## 目录与命名
 
-默认模板：`{album_artist}/{album} ({year}) [{quality}]/{tracknum:02d} {title}.m4a`
+默认模板：`{album_artist}/{album} ({year})/{tracknum:02d} {title}.m4a`
 
-`{quality}` 是**实际解析到的音质**，不是请求里写的档位：
+目录名默认**不带音质标签**——同一张专辑换码率重下会覆盖同一个目录，而不是并排两个。
+
+如果确实想按音质分目录，把 `[{quality}]` 加回 `album_dir` 即可。`{quality}` 是**实际解析到的音质**，不是请求里写的档位：
 
 - ALAC 带位深与采样率：`[ALAC 24bit-96kHz]`、`[ALAC 16bit-44.1kHz]`
 - 其他：`[AAC]`、`[Dolby Atmos]`、`[HE-AAC]`、`[AAC Binaural]`、`[AAC Downmix]`

@@ -134,7 +134,8 @@ fn default_true() -> bool {
     true
 }
 fn default_album_dir() -> String {
-    "{album_artist}/{album} ({year}) [{quality}]".into()
+    // 默认不带音质标签：同一张专辑的不同码率版本会落到同一个目录里
+    "{album_artist}/{album} ({year})".into()
 }
 fn default_lyrics() -> String {
     "both".into()
