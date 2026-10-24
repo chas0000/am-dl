@@ -1,6 +1,6 @@
 [package]
 name = "am-dl"
-version = "0.2.5"
+version = "0.2.6"
 edition = "2021"
 description = "Apple Music 服务端下载器 + 上游 am-hook 反向代理（专辑/歌单/单曲/MV/歌手）"
 license = "AGPL-3.0-only"
